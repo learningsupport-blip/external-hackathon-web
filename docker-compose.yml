@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hackhub
+      POSTGRES_PASSWORD: hackhub
+      POSTGRES_DB: hackhub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hackhub -d hackhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./apps/api
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+pg8000://hackhub:hackhub@postgres:5432/hackhub
+      SESSION_SECRET: dev-only-change-me
+      WEB_ORIGIN: http://localhost:3000
+      ADMIN_EMAILS: admin@hackhub.local
+      DEFAULT_TIMEZONE: Asia/Kolkata
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build: ./apps/web
+    environment:
+      API_URL: http://api:8000
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
