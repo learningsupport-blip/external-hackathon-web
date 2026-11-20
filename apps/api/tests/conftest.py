@@ -9,6 +9,9 @@ os.environ["ADMIN_EMAILS"] = "admin@hackhub.test"
 os.environ["WEB_ORIGIN"] = "http://localhost:3000"
 os.environ["ALLOWED_EMAIL_DOMAINS"] = ""
 os.environ["JOB_TICK_SECRET"] = "test-tick"
+os.environ["HACKHUB_JOBS"] = "0"
+os.environ["RESEND_API_KEY"] = ""
+os.environ["RESEND_FROM"] = "HackHub <onboarding@resend.dev>"
 
 import pytest
 from alembic import command
@@ -50,9 +53,7 @@ def clean_tables():
         conn.execute(
             text(
                 """
-                TRUNCATE audit_logs, hackathon_history, resources, milestones,
-                hackathon_tags, hackathon_categories, hackathon_admins,
-                hackathon_internal, hackathons, tags, sessions, users CASCADE
+                TRUNCATE hackathons, users, email_verifications CASCADE
                 """
             )
         )
@@ -61,7 +62,9 @@ def clean_tables():
 
 @pytest.fixture()
 def client():
+    from app.deps import _hits
     from app.main import app
 
+    _hits.clear()
     with TestClient(app) as test_client:
         yield test_client

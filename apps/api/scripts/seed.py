@@ -4,10 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from app.catalog import all_categories
 from app.config import get_settings
 from app.database import SessionLocal
 from app.errors import AppError
-from app.models import Category, User
+from app.models import User
 from app.schemas import HackathonCreate, HackathonUpdate, LabelIn, MilestoneIn
 from app.services import hackathons as service
 
@@ -28,7 +29,7 @@ def main() -> None:
             admin = User(email="admin@hackhub.local", name="HackHub Admin", role="super_admin")
             db.add(admin)
             db.flush()
-        categories = {row.slug: row.id for row in db.scalars(select(Category)).all()}
+        categories = {item["slug"]: item["id"] for item in all_categories()}
         samples = [
             {
                 "create": HackathonCreate(name="[Sample] Northwind AI Challenge", organiser="Sample AI Guild", short_description="Online sample for machine-learning teams. Not a real event."),
