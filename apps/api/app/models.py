@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text as sql_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -63,10 +64,20 @@ TRANSITIONS: dict[str, set[str]] = {
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("phone_country", "phone", name="uq_users_phone"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    first_name: Mapped[str | None] = mapped_column(String(80))
+    last_name: Mapped[str | None] = mapped_column(String(80))
+    phone_country: Mapped[str | None] = mapped_column(String(8))
+    phone: Mapped[str | None] = mapped_column(String(20))
+    university: Mapped[str | None] = mapped_column(String(200))
+    batch: Mapped[str | None] = mapped_column(String(40))
+    niat_id: Mapped[str | None] = mapped_column(String(16), unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(200))
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     avatar_url: Mapped[str | None] = mapped_column(String(1000))
     role: Mapped[str] = mapped_column(String(32), nullable=False, default=Role.student.value)
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True)
@@ -76,6 +87,17 @@ class User(Base):
     )
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user")
+
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verified_token_hash: Mapped[str | None] = mapped_column(String(64))
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Session(Base):
@@ -88,30 +110,6 @@ class Session(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="sessions")
-
-
-class Category(Base):
-    __tablename__ = "categories"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
-    slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
-
-    hackathons: Mapped[list["Hackathon"]] = relationship(
-        secondary="hackathon_categories", back_populates="categories"
-    )
-
-
-class Tag(Base):
-    __tablename__ = "tags"
-    __table_args__ = (UniqueConstraint("slug", "kind", name="uq_tags_slug_kind"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    slug: Mapped[str] = mapped_column(String(80), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-
-    hackathons: Mapped[list["Hackathon"]] = relationship(secondary="hackathon_tags", back_populates="tags")
 
 
 class Hackathon(Base):
@@ -173,103 +171,34 @@ class Hackathon(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    categories: Mapped[list[Category]] = relationship(
-        secondary="hackathon_categories", back_populates="hackathons"
-    )
-    tags: Mapped[list[Tag]] = relationship(secondary="hackathon_tags", back_populates="hackathons")
     milestones: Mapped[list["Milestone"]] = relationship(
         back_populates="hackathon", cascade="all, delete-orphan", order_by="Milestone.position"
     )
-    resources: Mapped[list["Resource"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Resource.position"
-    )
-    internal: Mapped["HackathonInternal | None"] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", uselist=False
-    )
-    admins: Mapped[list["HackathonAdmin"]] = relationship(
+    members: Mapped[list["HackathonMember"]] = relationship(
         back_populates="hackathon", cascade="all, delete-orphan"
     )
-    tracks: Mapped[list["Track"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Track.position"
+    categories: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    labels: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    internal: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=sql_text("'{}'::jsonb"))
+    section_states: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sql_text("'{}'::jsonb")
     )
-    deliverables: Mapped[list["Deliverable"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Deliverable.position"
+    tracks: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    deliverables: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb")
     )
-    prizes: Mapped[list["Prize"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Prize.position"
+    prizes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    judging_criteria: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb")
     )
-    judging_criteria: Mapped[list["JudgingCriterion"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="JudgingCriterion.position"
-    )
-    faqs: Mapped[list["Faq"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Faq.position"
-    )
-    announcements: Mapped[list["Announcement"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan", order_by="Announcement.position"
-    )
-    section_states: Mapped[list["SectionState"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan"
+    faqs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    resources: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
+    announcements: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb")
     )
     queries: Mapped[list["StudentQuery"]] = relationship(
         back_populates="hackathon", cascade="all, delete-orphan", order_by="StudentQuery.created_at"
     )
-    followers: Mapped[list["HackathonFollower"]] = relationship(
-        back_populates="hackathon", cascade="all, delete-orphan"
-    )
-
-
-class HackathonInternal(Base):
-    __tablename__ = "hackathon_internal"
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    internal_notes: Mapped[str | None] = mapped_column(Text)
-    tracking_status: Mapped[str | None] = mapped_column(String(80))
-    administrative_comments: Mapped[str | None] = mapped_column(Text)
-    verification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unverified")
-    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    source_urls: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="internal")
-
-
-class HackathonCategory(Base):
-    __tablename__ = "hackathon_categories"
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    category_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True
-    )
-
-
-class HackathonTag(Base):
-    __tablename__ = "hackathon_tags"
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True)
-
-
-class HackathonAdmin(Base):
-    __tablename__ = "hackathon_admins"
-    __table_args__ = (UniqueConstraint("hackathon_id", "user_id", name="uq_hackathon_admins_pair"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="admins")
-    user: Mapped[User] = relationship()
 
 
 class Milestone(Base):
@@ -294,22 +223,6 @@ class Milestone(Base):
     )
 
     hackathon: Mapped[Hackathon] = relationship(back_populates="milestones")
-
-
-class Resource(Base):
-    __tablename__ = "resources"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    url: Mapped[str] = mapped_column(String(1000), nullable=False)
-    kind: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
-    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="resources")
 
 
 class HackathonHistory(Base):
@@ -355,94 +268,6 @@ INFO_STATES = ("confirmed", "not_announced", "not_specified", "awaiting_confirma
 VERIFICATION_STATES = ("unverified", "verified", "needs_review")
 
 
-class _Child:
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-
-class Track(_Child, Base):
-    __tablename__ = "tracks"
-
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    requirements: Mapped[str | None] = mapped_column(Text)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="tracks")
-
-
-class Deliverable(_Child, Base):
-    __tablename__ = "deliverables"
-
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    detail: Mapped[str | None] = mapped_column(Text)
-    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="deliverables")
-
-
-class Prize(_Child, Base):
-    __tablename__ = "prizes"
-
-    label: Mapped[str] = mapped_column(String(200), nullable=False)
-    detail: Mapped[str | None] = mapped_column(Text)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="prizes")
-
-
-class JudgingCriterion(_Child, Base):
-    __tablename__ = "judging_criteria"
-    __table_args__ = (CheckConstraint("weight IS NULL OR (weight >= 0 AND weight <= 100)", name="ck_judging_weight"),)
-
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    detail: Mapped[str | None] = mapped_column(Text)
-    weight: Mapped[int | None] = mapped_column(Integer)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="judging_criteria")
-
-
-class Faq(_Child, Base):
-    __tablename__ = "faqs"
-
-    question: Mapped[str] = mapped_column(String(300), nullable=False)
-    answer: Mapped[str] = mapped_column(Text, nullable=False)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="faqs")
-
-
-class Announcement(_Child, Base):
-    __tablename__ = "announcements"
-
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="announcements")
-
-
-class SectionState(Base):
-    __tablename__ = "section_states"
-    __table_args__ = (
-        CheckConstraint(
-            "section in ('eligibility','participation','themes','submission','prizes','judging','preparation','dates')",
-            name="ck_section_states_section",
-        ),
-        CheckConstraint(
-            "state in ('confirmed','not_announced','not_specified','awaiting_confirmation','not_applicable')",
-            name="ck_section_states_state",
-        ),
-    )
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    section: Mapped[str] = mapped_column(String(32), primary_key=True)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="not_specified")
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="section_states")
-
-
 class StudentQuery(Base):
     __tablename__ = "queries"
 
@@ -455,74 +280,38 @@ class StudentQuery(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    responses: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     hackathon: Mapped[Hackathon] = relationship(back_populates="queries")
     author: Mapped[User | None] = relationship(foreign_keys=[author_id])
     assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id])
-    responses: Mapped[list["QueryResponse"]] = relationship(
-        back_populates="query", cascade="all, delete-orphan", order_by="QueryResponse.created_at"
-    )
 
 
-class QueryResponse(Base):
-    __tablename__ = "query_responses"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    query_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("queries.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    official: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    query: Mapped[StudentQuery] = relationship(back_populates="responses")
-
-
-class HackathonFollower(Base):
-    __tablename__ = "hackathon_followers"
-    __table_args__ = (UniqueConstraint("hackathon_id", "user_id", name="uq_hackathon_followers_pair"),)
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    hackathon: Mapped[Hackathon] = relationship(back_populates="followers")
-    user: Mapped[User] = relationship()
-
-
-class HackathonBookmark(Base):
-    __tablename__ = "hackathon_bookmarks"
-    __table_args__ = (UniqueConstraint("hackathon_id", "user_id", name="uq_hackathon_bookmarks_pair"),)
-
-    hackathon_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    hackathon: Mapped[Hackathon] = relationship()
-    user: Mapped[User] = relationship()
-
-
-class HackathonStance(Base):
-    __tablename__ = "hackathon_stances"
+class HackathonMember(Base):
+    __tablename__ = "hackathon_members"
     __table_args__ = (
-        UniqueConstraint("hackathon_id", "user_id", name="uq_hackathon_stances_pair"),
-        CheckConstraint("stance in ('registered', 'missed')", name="ck_hackathon_stances_stance"),
+        CheckConstraint(
+            "stance IS NULL OR stance IN ('registered', 'missed')",
+            name="ck_hackathon_members_stance",
+        ),
+        CheckConstraint(
+            "is_admin OR followed_at IS NOT NULL OR bookmarked_at IS NOT NULL OR stance IS NOT NULL OR interested_at IS NOT NULL",
+            name="ck_hackathon_members_active",
+        ),
     )
 
     hackathon_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("hackathons.id", ondelete="CASCADE"), primary_key=True
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    stance: Mapped[str] = mapped_column(String(16), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sql_text("false"))
+    followed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bookmarked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stance: Mapped[str | None] = mapped_column(String(16))
+    interested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    hackathon: Mapped[Hackathon] = relationship()
+    hackathon: Mapped[Hackathon] = relationship(back_populates="members")
     user: Mapped[User] = relationship()
 
 
@@ -532,6 +321,21 @@ class NotificationPreference(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     in_app: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     email: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ExtraNotification(Base):
+    __tablename__ = "extra_notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    hackathon_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("hackathons.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    hackathon: Mapped[Hackathon] = relationship()
 
 
 class NotificationJob(Base):
@@ -548,6 +352,9 @@ class NotificationJob(Base):
     )
     milestone_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     announcement_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    notice_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("extra_notifications.id", ondelete="SET NULL")
+    )
     offset_days: Mapped[int | None] = mapped_column(Integer)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)

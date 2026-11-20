@@ -18,6 +18,8 @@ services:
 
   api:
     build: ./apps/api
+    env_file:
+      - ./apps/api/.env
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+pg8000://hackhub:hackhub@postgres:5432/hackhub
@@ -28,6 +30,8 @@ services:
       PORT: 8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./secrets:/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy

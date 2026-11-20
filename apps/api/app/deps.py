@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.errors import AppError
-from app.models import Hackathon, HackathonAdmin, Role, User
+from app.members import get_member
+from app.models import Hackathon, Role, User
 from app.security import current_user
 
 _hits: dict[str, list[float]] = defaultdict(list)
@@ -16,8 +17,12 @@ def rate_limit(request: Request, bucket: str, limit: int = 30, window: float = 6
     ip = request.client.host if request.client else "unknown"
     key = f"{bucket}:{ip}"
     now = time.monotonic()
-    recent = [stamp for stamp in _hits[key] if now - stamp < window]
+    stale = [name for name, stamps in _hits.items() if not stamps or now - stamps[-1] >= window]
+    for name in stale:
+        del _hits[name]
+    recent = [stamp for stamp in _hits.get(key, []) if now - stamp < window]
     if len(recent) >= limit:
+        _hits[key] = recent
         raise AppError(429, "rate_limited", "Too many attempts. Wait a few minutes and try again.")
     recent.append(now)
     _hits[key] = recent
@@ -62,12 +67,8 @@ def can_edit(db: Session, user: User, hackathon: Hackathon) -> bool:
         return True
     if user.role != Role.coordinator.value:
         return False
-    return (
-        db.query(HackathonAdmin)
-        .filter(HackathonAdmin.hackathon_id == hackathon.id, HackathonAdmin.user_id == user.id)
-        .first()
-        is not None
-    )
+    row = get_member(db, hackathon.id, user.id)
+    return row is not None and row.is_admin
 
 
 def require_editor(db: Session, user: User, hackathon: Hackathon) -> None:

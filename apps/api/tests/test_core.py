@@ -118,6 +118,34 @@ def test_milestone_update_changes_calendar_and_history(client):
     assert change["previous"]["starts_at"] != change["new"]["starts_at"]
 
 
+def test_calendar_marks_only_the_deadline(client):
+    login(client, "admin@hackhub.test")
+    created = create_hackathon(client, name="Deadline Only Cup")
+    deadline = datetime.now(UTC) + timedelta(days=12)
+    meeting = datetime.now(UTC) + timedelta(days=4)
+    assert client.patch(
+        f"/api/v1/admin/hackathons/{created['id']}",
+        json={"submission_deadline": deadline.isoformat()},
+    ).status_code == 200
+    added = client.post(
+        f"/api/v1/admin/hackathons/{created['id']}/milestones",
+        json={"title": "Kickoff call", "type": "meeting", "starts_at": meeting.isoformat(), "visibility": "public"},
+    )
+    assert added.status_code == 201, added.text
+    client.post(f"/api/v1/admin/hackathons/{created['id']}/lifecycle", json={"lifecycle": "published"})
+    window = {"start": (datetime.now(UTC) - timedelta(days=1)).isoformat(), "end": (datetime.now(UTC) + timedelta(days=40)).isoformat()}
+    full = client.get("/api/v1/calendar", params=window)
+    assert any(item["id"] == added.json()["id"] for item in full.json()["items"])
+    marked = client.get("/api/v1/calendar", params={**window, "deadlines": "true"})
+    assert marked.status_code == 200
+    items = [item for item in marked.json()["items"] if item["hackathon_slug"] == created["slug"]]
+    assert len(items) == 1
+    assert items[0]["type"] == "deadline"
+    assert items[0]["hackathon_name"] == "Deadline Only Cup"
+    assert items[0]["starts_at"].startswith(deadline.date().isoformat())
+    assert all(item["id"] != added.json()["id"] for item in marked.json()["items"])
+
+
 def test_internal_milestone_and_cancelled_hackathon_skip_the_calendar(client):
     login(client, "admin@hackhub.test")
     created = create_hackathon(client, name="Quiet Round")
@@ -133,3 +161,34 @@ def test_internal_milestone_and_cancelled_hackathon_skip_the_calendar(client):
     calendar = client.get("/api/v1/calendar", params={"start": window_start, "end": window_end})
     assert calendar.json()["items"] == []
     assert client.get(f"/api/v1/hackathons/{created['slug']}").status_code == 404
+
+
+def test_published_hackathon_can_be_deleted(client):
+    login(client, "admin@hackhub.test")
+    created = create_hackathon(client, name="Published then removed")
+    published = client.post(f"/api/v1/admin/hackathons/{created['id']}/lifecycle", json={"lifecycle": "published"})
+    assert published.status_code == 200
+    assert client.get(f"/api/v1/hackathons/{created['slug']}").status_code == 200
+    deleted = client.delete(f"/api/v1/admin/hackathons/{created['id']}")
+    assert deleted.status_code == 204
+    assert client.get(f"/api/v1/hackathons/{created['slug']}").status_code == 404
+    assert client.get(f"/api/v1/admin/hackathons/{created['id']}").status_code == 404
+
+
+def test_a_deadline_inside_three_days_is_listed_automatically(client):
+    login(client, "admin@hackhub.test")
+    soon = create_hackathon(client, name="Due this week")
+    later = create_hackathon(client, name="Due next month")
+    draft = create_hackathon(client, name="Still a draft")
+    near = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+    far = (datetime.now(UTC) + timedelta(days=10)).isoformat()
+    assert client.patch(f"/api/v1/admin/hackathons/{soon['id']}", json={"submission_deadline": near}).status_code == 200
+    assert client.patch(f"/api/v1/admin/hackathons/{later['id']}", json={"submission_deadline": far}).status_code == 200
+    assert client.patch(f"/api/v1/admin/hackathons/{draft['id']}", json={"submission_deadline": near}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{soon['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{later['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    listed = client.get("/api/v1/hackathons/due")
+    assert listed.status_code == 200
+    body = listed.json()
+    assert [item["name"] for item in body] == ["Due this week"]
+    assert body[0]["next_deadline_title"] == "Submission deadline"

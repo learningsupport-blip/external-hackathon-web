@@ -7,11 +7,12 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.catalog import all_categories
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.deps import check_origin, rate_limit, require_editor, require_staff, require_super_admin, require_user, user_from_request
 from app.errors import AppError
-from app.models import Category, User
+from app.models import User
 from app.schemas import (
     AdminAnnouncementOut,
     AdminPage,
@@ -26,6 +27,12 @@ from app.schemas import (
     DeliverableIn,
     DeliverableOut,
     DevLoginIn,
+    EmailCodeIn,
+    EmailCodeOut,
+    EmailConfirmIn,
+    EmailConfirmOut,
+    ExtraNoticeIn,
+    ExtraNoticeOut,
     FaqIn,
     FaqOut,
     HackathonAdmin,
@@ -38,9 +45,16 @@ from app.schemas import (
     JudgingIn,
     JudgingOut,
     LifecycleIn,
+    LoginIn,
     MilestoneIn,
     MilestoneOut,
     MyQueryOut,
+    ImportCommitIn,
+    ImportExtractOut,
+    SheetImportOut,
+    SheetSkipOut,
+    SheetStatusOut,
+    ImportUrlIn,
     NotificationOut,
     NotificationPreferenceIn,
     NotificationPreferenceOut,
@@ -48,6 +62,8 @@ from app.schemas import (
     PrizeIn,
     PrizeOut,
     QueryIn,
+    RegisterIn,
+    SignupOptions,
     StanceIn,
     StanceOut,
     QueryOut,
@@ -61,7 +77,7 @@ from app.schemas import (
     TrackOut,
     UserOut,
 )
-from app.services import content, notifications as notify
+from app.services import accounts, content, importing, notifications as notify, sheets
 from app.security import (
     clear_session,
     google_auth_url,
@@ -89,9 +105,8 @@ def health() -> dict:
 
 
 @router.get("/categories", response_model=list[CategoryOut])
-def categories(db: Session = Depends(get_db)) -> list[CategoryOut]:
-    rows = db.scalars(select(Category).order_by(Category.name)).all()
-    return [CategoryOut(id=row.id, name=row.name, slug=row.slug) for row in rows]
+def categories() -> list[CategoryOut]:
+    return [CategoryOut(id=item["id"], name=item["name"], slug=item["slug"]) for item in all_categories()]
 
 
 @router.post("/auth/dev-login", response_model=UserOut)
@@ -109,6 +124,74 @@ def dev_login(
     user = upsert_user(db, settings, email=payload.email, name=payload.name, avatar_url=None, google_sub=None)
     start_session(db, settings, user, response)
     write_audit(db, action="auth.dev_login", actor_id=user.id, entity_type="user", entity_id=str(user.id), ip=request.client.host if request.client else None)
+    return _user_out(user)
+
+
+@router.get("/auth/options", response_model=SignupOptions)
+def auth_options() -> SignupOptions:
+    return SignupOptions.model_validate(accounts.signup_options())
+
+
+@router.post("/auth/email/code", response_model=EmailCodeOut)
+def email_code(
+    payload: EmailCodeIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> EmailCodeOut:
+    check_origin(request, settings)
+    rate_limit(request, "email-code", limit=5, window=600)
+    dev_code = accounts.request_code(db, settings, payload.email)
+    message = "We sent a verification code to your email."
+    if dev_code:
+        message = "Email delivery is not configured, so the code is shown here."
+    return EmailCodeOut(message=message, dev_code=dev_code)
+
+
+@router.post("/auth/email/confirm", response_model=EmailConfirmOut)
+def email_confirm(
+    payload: EmailConfirmIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> EmailConfirmOut:
+    check_origin(request, settings)
+    rate_limit(request, "email-confirm", limit=10, window=600)
+    token = accounts.confirm_code(db, payload.email, payload.code)
+    return EmailConfirmOut(verification_token=token)
+
+
+@router.post("/auth/register", response_model=UserOut, status_code=201)
+def register(
+    payload: RegisterIn,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> UserOut:
+    check_origin(request, settings)
+    rate_limit(request, "register", limit=10, window=600)
+    user = accounts.register_user(db, payload)
+    if payload.email in settings.admin_email_set:
+        user.role = "super_admin"
+    start_session(db, settings, user, response)
+    write_audit(db, action="auth.register", actor_id=user.id, entity_type="user", entity_id=str(user.id), ip=request.client.host if request.client else None)
+    return _user_out(user)
+
+
+@router.post("/auth/login", response_model=UserOut)
+def login(
+    payload: LoginIn,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> UserOut:
+    check_origin(request, settings)
+    rate_limit(request, "login", limit=10, window=600)
+    user = accounts.login_user(db, payload.email, payload.password)
+    start_session(db, settings, user, response)
+    write_audit(db, action="auth.login", actor_id=user.id, entity_type="user", entity_id=str(user.id), ip=request.client.host if request.client else None)
     return _user_out(user)
 
 
@@ -194,6 +277,11 @@ def list_hackathons(
     return _page_card(rows, total, page, page_size)
 
 
+@router.get("/hackathons/due", response_model=list[HackathonCard])
+def hackathons_due(days: int = Query(default=3, ge=1, le=30), db: Session = Depends(get_db)) -> list[HackathonCard]:
+    return [service.to_card(item) for item in service.due_soon(db, days=days)]
+
+
 @router.get("/hackathons/{slug}", response_model=HackathonPublic)
 def hackathon_detail(slug: str, request: Request, db: Session = Depends(get_db)) -> HackathonPublic:
     hackathon = service.get_public_by_slug(db, slug)
@@ -201,7 +289,10 @@ def hackathon_detail(slug: str, request: Request, db: Session = Depends(get_db))
     following = bool(user and content.is_following(db, hackathon.id, user.id))
     bookmarked = bool(user and content.is_bookmarked(db, hackathon.id, user.id))
     stance = content.stance_for(db, hackathon.id, user.id) if user else None
-    return service.to_public(hackathon, following=following, bookmarked=bookmarked, stance=stance)
+    interested = content.is_interested(db, hackathon.id, user.id) if user else False
+    return service.to_public(
+        hackathon, following=following, bookmarked=bookmarked, stance=stance, interested=interested
+    )
 
 
 def _aware(value: datetime) -> datetime:
@@ -217,15 +308,31 @@ def calendar(
     category: str | None = None,
     type: str | None = Query(default=None, alias="type"),
     hackathon: str | None = None,
+    deadlines: bool = False,
     db: Session = Depends(get_db),
 ) -> CalendarResponse:
     start = _aware(start)
     end = _aware(end)
     if end < start:
         raise AppError(422, "invalid_range", "Calendar end must be after the start")
-    rows = service.calendar_events(db, start=start, end=end, category=category, event_type=type, hackathon=hackathon)
-    return CalendarResponse(
-        items=[
+    if deadlines:
+        marked = service.deadline_events(db, start=start, end=end, category=category, hackathon=hackathon)
+        items = [
+            CalendarEvent(
+                id=row.id,
+                title=row.name,
+                hackathon_name=row.name,
+                hackathon_slug=row.slug,
+                type="deadline",
+                starts_at=when,
+                ends_at=when,
+                timezone=row.timezone,
+            )
+            for row, when in marked
+        ]
+    else:
+        rows = service.calendar_events(db, start=start, end=end, category=category, event_type=type, hackathon=hackathon)
+        items = [
             CalendarEvent(
                 id=item.id,
                 title=item.title,
@@ -237,7 +344,9 @@ def calendar(
                 timezone=item.hackathon.timezone,
             )
             for item in rows
-        ],
+        ]
+    return CalendarResponse(
+        items=items,
         time_label="Event times are stored in UTC and labeled with each hackathon timezone",
     )
 
@@ -278,6 +387,78 @@ def create_hackathon(
     user = require_user(request, db)
     require_staff(user)
     return service.to_admin(service.create_hackathon(db, settings, user, payload))
+
+
+@router.post("/admin/hackathons/import/extract", response_model=ImportExtractOut)
+def extract_hackathon_import(
+    payload: ImportUrlIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ImportExtractOut:
+    check_origin(request, settings)
+    rate_limit(request, "import-extract", limit=8, window=600)
+    user = require_user(request, db)
+    require_staff(user)
+    proposal, sources, missing = importing.extract_from_url(settings, payload.url)
+    status = sheets.sheet_status(settings)
+    sheet_row = None
+    sheet_error = None
+    if status["connected"]:
+        try:
+            sheet_row = sheets.publish_extract(settings, proposal, sources[0] if sources else payload.url)
+        except AppError as exc:
+            sheet_error = exc.message
+    return ImportExtractOut(
+        proposal=proposal,
+        sources=sources,
+        missing=missing,
+        sheet_connected=status["connected"],
+        sheet_url=status["url"],
+        sheet_row=sheet_row,
+        sheet_error=sheet_error,
+    )
+
+
+@router.get("/admin/hackathons/import/sheet", response_model=SheetStatusOut)
+def hackathon_sheet_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SheetStatusOut:
+    user = require_user(request, db)
+    require_staff(user)
+    return SheetStatusOut(**sheets.sheet_status(settings))
+
+
+@router.post("/admin/hackathons/import/sheet", response_model=SheetImportOut)
+def import_ready_sheet_rows(
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SheetImportOut:
+    check_origin(request, settings)
+    user = require_user(request, db)
+    require_staff(user)
+    result = sheets.pull_ready(db, settings, user)
+    return SheetImportOut(
+        created_count=len(result["created_ids"]),
+        created_ids=result["created_ids"],
+        skipped=[SheetSkipOut(row=item.row, reason=item.reason) for item in result["skipped"]],
+    )
+
+
+@router.post("/admin/hackathons/import", response_model=HackathonAdmin, status_code=201)
+def commit_hackathon_import(
+    payload: ImportCommitIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> HackathonAdmin:
+    check_origin(request, settings)
+    user = require_user(request, db)
+    require_staff(user)
+    return service.to_admin(importing.commit_import(db, settings, user, payload.proposal))
 
 
 @router.get("/admin/hackathons/{hackathon_id}", response_model=HackathonAdmin)
@@ -656,6 +837,20 @@ def remove_stance(slug: str, request: Request, db: Session = Depends(get_db)) ->
     content.clear_stance(db, user, service.get_public_by_slug(db, slug))
 
 
+@router.put("/hackathons/{slug}/interest", status_code=204)
+def mark_interest(slug: str, request: Request, db: Session = Depends(get_db)) -> None:
+    check_origin(request)
+    user = require_user(request, db)
+    content.set_interest(db, user, service.get_public_by_slug(db, slug))
+
+
+@router.delete("/hackathons/{slug}/interest", status_code=204)
+def unmark_interest(slug: str, request: Request, db: Session = Depends(get_db)) -> None:
+    check_origin(request)
+    user = require_user(request, db)
+    content.clear_interest(db, user, service.get_public_by_slug(db, slug))
+
+
 @router.post("/hackathons/{slug}/queries", response_model=QueryOut, status_code=201)
 def ask_query(slug: str, payload: QueryIn, request: Request, db: Session = Depends(get_db)) -> QueryOut:
     check_origin(request)
@@ -751,6 +946,12 @@ def my_bookmarks(request: Request, db: Session = Depends(get_db)) -> list[Hackat
     return content.my_bookmarks(db, require_user(request, db))
 
 
+@router.get("/me/interests", response_model=list[str])
+def my_interests(request: Request, db: Session = Depends(get_db)) -> list[str]:
+    user = require_user(request, db)
+    return content.my_interests(db, user)
+
+
 @router.get("/me/stances", response_model=list[StanceOut])
 def my_stances(request: Request, db: Session = Depends(get_db)) -> list[StanceOut]:
     user = require_user(request, db)
@@ -775,6 +976,38 @@ def patch_query(query_id: UUID, payload: QueryPatch, request: Request, db: Sessi
     user = require_user(request, db)
     require_staff(user)
     return _admin_query(content.update_query(db, user, query_id, payload.status, payload.assignee_id))
+
+
+def _extra_out(row) -> ExtraNoticeOut:
+    return ExtraNoticeOut(
+        id=row.id,
+        hackathon_id=row.hackathon_id,
+        hackathon_name=row.hackathon.name,
+        title=row.title,
+        body=row.body,
+        created_at=row.created_at,
+    )
+
+
+@router.get("/admin/notifications", response_model=list[ExtraNoticeOut])
+def admin_notifications(request: Request, db: Session = Depends(get_db)) -> list[ExtraNoticeOut]:
+    user = require_user(request, db)
+    require_staff(user)
+    return [_extra_out(row) for row in notify.list_extra(db, user)]
+
+
+@router.post("/admin/notifications", response_model=ExtraNoticeOut, status_code=201)
+def create_notification(payload: ExtraNoticeIn, request: Request, db: Session = Depends(get_db)) -> ExtraNoticeOut:
+    check_origin(request)
+    user = require_user(request, db)
+    require_staff(user)
+    hackathon = service.get_hackathon(db, payload.hackathon_id)
+    require_editor(db, user, hackathon)
+    if hackathon.lifecycle not in {"published", "postponed", "completed"}:
+        raise AppError(422, "not_live", "Publish the hackathon before sending an extra notification")
+    notice = notify.send_extra(db, user, hackathon, payload.title, payload.body)
+    notice.hackathon = hackathon
+    return _extra_out(notice)
 
 
 @router.get("/admin/announcements", response_model=list[AdminAnnouncementOut])

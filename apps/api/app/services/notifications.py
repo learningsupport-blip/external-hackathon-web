@@ -3,14 +3,15 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import Settings, get_settings
+from app.documents import items
 from app.models import (
     PUBLIC_LIFECYCLES,
-    Announcement,
+    ExtraNotification,
     Hackathon,
-    HackathonFollower,
+    HackathonMember,
     Lifecycle,
     Milestone,
     Notification,
@@ -33,7 +34,11 @@ def _prefs(db: Session, user_id) -> NotificationPreference:
 
 def _followers(db: Session, hackathon_id) -> list:
     return list(
-        db.scalars(select(HackathonFollower.user_id).where(HackathonFollower.hackathon_id == hackathon_id)).all()
+        db.scalars(
+            select(HackathonMember.user_id).where(
+                HackathonMember.hackathon_id == hackathon_id, HackathonMember.followed_at.is_not(None)
+            )
+        ).all()
     )
 
 
@@ -111,6 +116,82 @@ def schedule_for_user(db: Session, hackathon: Hackathon, user_id) -> None:
         _schedule_one(db, hackathon, milestone, user_id)
 
 
+def event_deadline(hackathon: Hackathon, now: datetime | None = None) -> datetime | None:
+    if hackathon.submission_deadline:
+        return hackathon.submission_deadline
+    if hackathon.registration_closes_at:
+        return hackathon.registration_closes_at
+    now = now or datetime.now(UTC)
+    moments = []
+    for milestone in hackathon.milestones:
+        if milestone.visibility != "public":
+            continue
+        when = milestone.ends_at or milestone.starts_at
+        if when:
+            moments.append(when)
+    if not moments:
+        return None
+    future = [item for item in moments if item >= now]
+    return min(future) if future else max(moments)
+
+
+def clear_interest_job(db: Session, hackathon_id, user_id) -> None:
+    db.execute(
+        update(NotificationJob)
+        .where(
+            NotificationJob.hackathon_id == hackathon_id,
+            NotificationJob.user_id == user_id,
+            NotificationJob.kind == "interest",
+            NotificationJob.status == "pending",
+        )
+        .values(status="cancelled")
+    )
+
+
+def schedule_interest(db: Session, hackathon: Hackathon, user_id) -> None:
+    deadline = event_deadline(hackathon)
+    now = datetime.now(UTC)
+    active = hackathon.lifecycle in {Lifecycle.published.value, Lifecycle.postponed.value}
+    if deadline is None or deadline <= now or not active:
+        clear_interest_job(db, hackathon.id, user_id)
+        return
+    run_at = deadline - timedelta(days=3)
+    if run_at <= now:
+        run_at = now
+    key = f"{user_id}:interest:{hackathon.id}"
+    existing = db.scalar(select(NotificationJob).where(NotificationJob.idempotency_key == key))
+    if existing is None:
+        db.add(
+            NotificationJob(
+                user_id=user_id,
+                hackathon_id=hackathon.id,
+                offset_days=3,
+                version=1,
+                kind="interest",
+                idempotency_key=key,
+                run_at=run_at,
+                status="pending",
+            )
+        )
+        return
+    if existing.status == "done":
+        return
+    existing.status = "pending"
+    existing.run_at = run_at
+    existing.offset_days = 3
+    existing.kind = "interest"
+
+
+def reschedule_interest(db: Session, hackathon: Hackathon) -> None:
+    user_ids = db.scalars(
+        select(HackathonMember.user_id).where(
+            HackathonMember.hackathon_id == hackathon.id, HackathonMember.interested_at.is_not(None)
+        )
+    ).all()
+    for user_id in user_ids:
+        schedule_interest(db, hackathon, user_id)
+
+
 def on_lifecycle(db: Session, hackathon: Hackathon, previous: str | None = None) -> None:
     if hackathon.lifecycle in {PUBLIC_LIFECYCLES[0], PUBLIC_LIFECYCLES[1]}:
         for milestone in hackathon.milestones:
@@ -178,6 +259,47 @@ def announce_meeting(db: Session, hackathon: Hackathon, milestone: Milestone) ->
     )
 
 
+def send_extra(db: Session, actor: User, hackathon: Hackathon, title: str, body: str) -> ExtraNotification:
+    notice = ExtraNotification(
+        hackathon_id=hackathon.id,
+        title=title.strip(),
+        body=body.strip(),
+        created_by=actor.id,
+    )
+    db.add(notice)
+    db.flush()
+    settings = get_settings()
+    now = datetime.now(UTC)
+    delivered = f"{notice.body}\n\nOpen it on HackHub: {_portal_link(hackathon)}"
+    for user in _students(db):
+        job = NotificationJob(
+            user_id=user.id,
+            hackathon_id=hackathon.id,
+            notice_id=notice.id,
+            version=1,
+            kind="extra",
+            idempotency_key=f"{user.id}:extra:{notice.id}",
+            run_at=now,
+            status="pending",
+        )
+        db.add(job)
+        db.flush()
+        _deliver(db, settings, job, title=notice.title, body=delivered)
+    return notice
+
+
+def list_extra(db: Session, actor: User) -> list[ExtraNotification]:
+    stmt = select(ExtraNotification).join(Hackathon, Hackathon.id == ExtraNotification.hackathon_id)
+    if actor.role != Role.super_admin.value:
+        stmt = stmt.join(HackathonMember, HackathonMember.hackathon_id == ExtraNotification.hackathon_id).where(
+            HackathonMember.user_id == actor.id, HackathonMember.is_admin.is_(True)
+        )
+    rows = db.scalars(
+        stmt.options(selectinload(ExtraNotification.hackathon)).order_by(ExtraNotification.created_at.desc()).limit(50)
+    ).unique().all()
+    return list(rows)
+
+
 def announce_students(db: Session, hackathon: Hackathon, *, kind: str, title: str, body: str, key: str) -> None:
     settings = get_settings()
     now = datetime.now(UTC)
@@ -223,7 +345,16 @@ def save_preferences(db: Session, user: User, *, in_app: bool, email: bool) -> N
     return row
 
 
-def schedule_announcement(db: Session, hackathon: Hackathon, announcement: Announcement) -> None:
+def _announcement(hackathon: Hackathon | None, announcement_id):
+    if hackathon is None or announcement_id is None:
+        return None
+    for item in items(hackathon, "announcements"):
+        if item.id == announcement_id:
+            return item
+    return None
+
+
+def schedule_announcement(db: Session, hackathon: Hackathon, announcement) -> None:
     if announcement.published_at is None or hackathon.lifecycle not in PUBLIC_LIFECYCLES:
         return
     for user_id in _followers(db, hackathon.id):
@@ -270,9 +401,19 @@ def _message(db: Session, job: NotificationJob) -> tuple[str, str]:
         when = _when_label(hackathon, (milestone.starts_at or milestone.ends_at) if milestone else None) if hackathon else ""
         return f"{name}: meeting scheduled", f"{label} is scheduled for {when}.\n\nOpen it on HackHub: {link}"
     if job.kind == "announcement":
-        announcement = db.get(Announcement, job.announcement_id) if job.announcement_id else None
+        announcement = _announcement(hackathon, job.announcement_id)
         title = announcement.title if announcement else "Hackathon update"
         return f"{name}: {title}", announcement.body if announcement else "A followed hackathon was updated."
+    if job.kind == "extra":
+        notice = db.get(ExtraNotification, job.notice_id) if job.notice_id else None
+        if notice is None:
+            return f"{name}: update", f"Open it on HackHub: {link}"
+        return notice.title, f"{notice.body}\n\nOpen it on HackHub: {link}"
+    if job.kind == "interest":
+        return (
+            f"{name}: deadline coming up",
+            f"The deadline for {name} is within three days.\n\nOpen it on HackHub: {link}",
+        )
     milestone = db.get(Milestone, job.milestone_id) if job.milestone_id else None
     label = milestone.title if milestone else "A deadline"
     return f"{name}: {label} in {job.offset_days} days", f"{label} is {job.offset_days} days away."

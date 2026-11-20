@@ -22,6 +22,23 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000)
+    return f"pbkdf2_sha256$200000${salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    if not stored:
+        return False
+    try:
+        _algo, rounds, salt, digest = stored.split("$", 3)
+        check = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(rounds)).hex()
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(check, digest)
+
+
 def client_ip(request_client: str | None) -> str | None:
     return request_client
 

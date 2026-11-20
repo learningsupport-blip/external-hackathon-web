@@ -15,12 +15,16 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:3000/api/v1/auth/google/callback"
+    google_sheet_id: str = ""
+    google_sheets_credentials: str = ""
     admin_emails: str = ""
     allowed_email_domains: str = ""
     default_timezone: str = "Asia/Kolkata"
     job_tick_secret: str = ""
     resend_api_key: str = ""
     resend_from: str = "HackHub <onboarding@resend.dev>"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     @property
     def is_production(self) -> bool:

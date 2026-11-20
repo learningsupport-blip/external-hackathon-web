@@ -87,6 +87,112 @@ class DevLoginIn(BaseModel):
         return _email(value)
 
 
+class CountryOption(BaseModel):
+    code: str
+    dial: str
+    label: str
+
+
+class SignupOptions(BaseModel):
+    countries: list[CountryOption]
+    universities: list[str]
+    batches: list[str]
+
+
+class EmailCodeIn(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def email_ok(cls, value: str) -> str:
+        return _email(value)
+
+
+class EmailCodeOut(BaseModel):
+    message: str
+    dev_code: str | None = None
+
+
+class EmailConfirmIn(BaseModel):
+    email: str
+    code: str = Field(min_length=6, max_length=6)
+
+    @field_validator("email")
+    @classmethod
+    def email_ok(cls, value: str) -> str:
+        return _email(value)
+
+    @field_validator("code")
+    @classmethod
+    def code_ok(cls, value: str) -> str:
+        if not value.isdigit():
+            raise ValueError("Enter the 6-digit code from your email")
+        return value
+
+
+class EmailConfirmOut(BaseModel):
+    verification_token: str
+
+
+class RegisterIn(BaseModel):
+    email: str
+    verification_token: str = Field(min_length=20, max_length=200)
+    first_name: str = Field(min_length=1, max_length=80)
+    last_name: str = Field(min_length=1, max_length=80)
+    phone_country: str = Field(min_length=2, max_length=8)
+    phone: str
+    university: str
+    batch: str
+    niat_id: str
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def email_ok(cls, value: str) -> str:
+        return _email(value)
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def name_ok(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Enter your name")
+        return cleaned
+
+    @field_validator("phone")
+    @classmethod
+    def phone_ok(cls, value: str) -> str:
+        digits = re.sub(r"\D", "", value)
+        if not re.fullmatch(r"\d{6,15}", digits):
+            raise ValueError("Enter a valid mobile number")
+        return digits
+
+    @field_validator("niat_id")
+    @classmethod
+    def niat_ok(cls, value: str) -> str:
+        cleaned = value.strip().upper()
+        if re.fullmatch(r"N\d{2}[A-Z]\d{2}[A-Z]\d{4}", cleaned) is None:
+            raise ValueError("NIAT ID should look like N25H05F9974")
+        return cleaned
+
+    @field_validator("password")
+    @classmethod
+    def password_ok(cls, value: str) -> str:
+        if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
+            raise ValueError("Use at least 8 characters, with a letter and a number")
+        return value
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def email_ok(cls, value: str) -> str:
+        return _email(value)
+
+
 class CreateUserIn(BaseModel):
     email: str
     name: str = Field(min_length=1, max_length=200)
@@ -495,6 +601,21 @@ class AdminAnnouncementOut(BaseModel):
     published_at: datetime | None
 
 
+class ExtraNoticeIn(BaseModel):
+    hackathon_id: UUID
+    title: str = Field(min_length=2, max_length=200)
+    body: str = Field(min_length=2, max_length=2000)
+
+
+class ExtraNoticeOut(BaseModel):
+    id: UUID
+    hackathon_id: UUID
+    hackathon_name: str
+    title: str
+    body: str
+    created_at: datetime
+
+
 class HackathonCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
     organiser: str = Field(min_length=2, max_length=200)
@@ -748,6 +869,7 @@ class HackathonPublic(HackathonCard):
     following: bool = False
     bookmarked: bool = False
     stance: str | None = None
+    interested: bool = False
 
 
 class HackathonAdmin(HackathonPublic):
@@ -826,3 +948,133 @@ class CalendarEvent(BaseModel):
 class CalendarResponse(BaseModel):
     items: list[CalendarEvent]
     time_label: str
+
+
+class ImportUrlIn(BaseModel):
+    url: str
+
+
+class ImportTrack(BaseModel):
+    name: str = ""
+    requirements: str | None = None
+
+
+class ImportDeliverable(BaseModel):
+    title: str = ""
+    detail: str | None = None
+    required: bool = True
+
+
+class ImportPrize(BaseModel):
+    label: str = ""
+    detail: str | None = None
+
+
+class ImportJudging(BaseModel):
+    title: str = ""
+    detail: str | None = None
+    weight: int | None = None
+
+
+class ImportMilestone(BaseModel):
+    title: str = ""
+    description: str | None = None
+    type: str = ""
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+
+class ImportResource(BaseModel):
+    title: str = ""
+    url: str = ""
+    kind: str = "other"
+
+
+class ImportFaq(BaseModel):
+    question: str = ""
+    answer: str = ""
+
+
+class ImportProposal(BaseModel):
+    name: str = ""
+    organiser: str = ""
+    organiser_logo_url: str | None = None
+    short_description: str | None = None
+    description: str | None = None
+    problem_statements: str | None = None
+    official_website: str | None = None
+    banner_url: str | None = None
+    difficulty: str | None = None
+    participation_type: str | None = None
+    min_team_size: int | None = None
+    max_team_size: int | None = None
+    eligibility: str | None = None
+    academic_year: str | None = None
+    degree_requirements: str | None = None
+    geographic_restrictions: str | None = None
+    other_eligibility: str | None = None
+    mode: str | None = None
+    venue: str | None = None
+    location: str | None = None
+    event_duration: str | None = None
+    registration_url: str | None = None
+    registration_opens_at: datetime | None = None
+    registration_closes_at: datetime | None = None
+    registration_instructions: str | None = None
+    submission_url: str | None = None
+    submission_deadline: datetime | None = None
+    required_deliverables: str | None = None
+    submission_instructions: str | None = None
+    prize_pool: str | None = None
+    first_prize: str | None = None
+    second_prize: str | None = None
+    third_prize: str | None = None
+    special_awards: str | None = None
+    certificates: str | None = None
+    internships: str | None = None
+    other_rewards: str | None = None
+    preparation_guidelines: str | None = None
+    timezone: str | None = None
+    themes: list[str] = []
+    technologies: list[str] = []
+    tags: list[str] = []
+    categories: list[str] = []
+    tracks: list[ImportTrack] = []
+    deliverables: list[ImportDeliverable] = []
+    prizes: list[ImportPrize] = []
+    judging: list[ImportJudging] = []
+    milestones: list[ImportMilestone] = []
+    resources: list[ImportResource] = []
+    faqs: list[ImportFaq] = []
+    source_urls: list[str] = []
+
+
+class ImportExtractOut(BaseModel):
+    proposal: ImportProposal
+    sources: list[str]
+    missing: list[str]
+    sheet_connected: bool = False
+    sheet_url: str | None = None
+    sheet_row: int | None = None
+    sheet_error: str | None = None
+
+
+class ImportCommitIn(BaseModel):
+    proposal: ImportProposal
+
+
+class SheetStatusOut(BaseModel):
+    connected: bool
+    url: str | None = None
+    message: str | None = None
+
+
+class SheetSkipOut(BaseModel):
+    row: int
+    reason: str
+
+
+class SheetImportOut(BaseModel):
+    created_count: int
+    created_ids: list[UUID]
+    skipped: list[SheetSkipOut]

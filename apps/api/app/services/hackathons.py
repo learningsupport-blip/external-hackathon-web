@@ -1,27 +1,25 @@
-from datetime import UTC, datetime
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, String, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.catalog import category_by_id
 from app.config import Settings
+from app.documents import Doc, append_item, default_internal, default_sections, drop_item, items, touch
 from app.errors import AppError
+from app.members import ensure_member, prune_member
 from app.models import (
     PUBLIC_LIFECYCLES,
     SECTION_KEYS,
     TRANSITIONS,
-    Category,
     Hackathon,
-    HackathonAdmin,
     HackathonHistory,
-    HackathonInternal,
+    HackathonMember,
     Lifecycle,
     Milestone,
-    Resource,
     Role,
-    SectionState,
     StudentQuery,
-    Tag,
     User,
 )
 from app.services import notifications
@@ -100,20 +98,9 @@ SCALAR_FIELDS = (
 )
 
 LOAD = (
-    selectinload(Hackathon.categories),
-    selectinload(Hackathon.tags),
     selectinload(Hackathon.milestones),
-    selectinload(Hackathon.resources),
-    selectinload(Hackathon.internal),
-    selectinload(Hackathon.admins).selectinload(HackathonAdmin.user),
-    selectinload(Hackathon.tracks),
-    selectinload(Hackathon.deliverables),
-    selectinload(Hackathon.prizes),
-    selectinload(Hackathon.judging_criteria),
-    selectinload(Hackathon.faqs),
-    selectinload(Hackathon.announcements),
-    selectinload(Hackathon.section_states),
-    selectinload(Hackathon.queries).selectinload(StudentQuery.responses),
+    selectinload(Hackathon.members).selectinload(HackathonMember.user),
+    selectinload(Hackathon.queries),
 )
 
 STANDARD_MILESTONES = (
@@ -153,6 +140,31 @@ def registration_state(hackathon: Hackathon, now: datetime | None = None) -> str
 
 def next_deadline(hackathon: Hackathon, now: datetime | None = None) -> tuple[datetime | None, str | None]:
     now = now or datetime.now(UTC)
+    candidates = _future_deadlines(hackathon, now)
+    if not candidates:
+        return None, None
+    when, title = min(candidates, key=lambda item: item[0])
+    return when, title
+
+
+def due_soon(db: Session, *, days: int = 3) -> list[Hackathon]:
+    now = datetime.now(UTC)
+    horizon = now + timedelta(days=days)
+    rows = db.scalars(
+        select(Hackathon)
+        .where(Hackathon.lifecycle.in_((Lifecycle.published.value, Lifecycle.postponed.value)))
+        .options(*LOAD)
+    ).unique().all()
+    ranked: list[tuple[datetime, Hackathon]] = []
+    for hackathon in rows:
+        soon = [when for when, _title in _future_deadlines(hackathon, now) if when <= horizon]
+        if soon:
+            ranked.append((min(soon), hackathon))
+    ranked.sort(key=lambda item: item[0])
+    return [hackathon for _when, hackathon in ranked]
+
+
+def _future_deadlines(hackathon: Hackathon, now: datetime) -> list[tuple[datetime, str]]:
     candidates: list[tuple[datetime, str]] = []
     for milestone in hackathon.milestones:
         if milestone.visibility != "public":
@@ -160,17 +172,18 @@ def next_deadline(hackathon: Hackathon, now: datetime | None = None) -> tuple[da
         when = milestone.ends_at or milestone.starts_at
         if when and when >= now:
             candidates.append((when, milestone.title))
-    if not candidates:
-        return None, None
-    when, title = min(candidates, key=lambda item: item[0])
-    return when, title
+    if hackathon.registration_closes_at and hackathon.registration_closes_at >= now:
+        candidates.append((hackathon.registration_closes_at, "Registration closes"))
+    if hackathon.submission_deadline and hackathon.submission_deadline >= now:
+        candidates.append((hackathon.submission_deadline, "Submission deadline"))
+    return candidates
 
 
-def _category_out(category: Category) -> CategoryOut:
+def _category_out(category) -> CategoryOut:
     return CategoryOut(id=category.id, name=category.name, slug=category.slug)
 
 
-def _label_out(tag: Tag) -> LabelOut:
+def _label_out(tag) -> LabelOut:
     return LabelOut(id=tag.id, name=tag.name, slug=tag.slug, kind=tag.kind)
 
 
@@ -189,7 +202,7 @@ def _milestone_out(milestone: Milestone) -> MilestoneOut:
     )
 
 
-def _resource_out(resource: Resource) -> ResourceOut:
+def _resource_out(resource) -> ResourceOut:
     return ResourceOut(
         id=resource.id, title=resource.title, url=resource.url, kind=resource.kind, position=resource.position
     )
@@ -204,7 +217,7 @@ def to_card(hackathon: Hackathon) -> HackathonCard:
         organiser=hackathon.organiser,
         organiser_logo_url=hackathon.organiser_logo_url,
         short_description=hackathon.short_description,
-        categories=[_category_out(item) for item in hackathon.categories],
+        categories=[_category_out(item) for item in items(hackathon, "categories")],
         mode=hackathon.mode,
         participation_type=hackathon.participation_type,
         difficulty=hackathon.difficulty,
@@ -221,12 +234,22 @@ def to_card(hackathon: Hackathon) -> HackathonCard:
         timezone=hackathon.timezone,
         published_at=hackathon.published_at,
         updated_at=hackathon.updated_at,
-        labels=[_label_out(item) for item in hackathon.tags],
+        labels=[_label_out(item) for item in items(hackathon, "labels")],
     )
 
 
+def _responses(row: StudentQuery, official_only: bool = False) -> list[QueryResponseOut]:
+    replies = items(row, "responses")
+    if official_only:
+        replies = [item for item in replies if item.official]
+    return [
+        QueryResponseOut(id=item.id, body=item.body, official=item.official, created_at=item.created_at)
+        for item in replies
+    ]
+
+
 def _public_query(row: StudentQuery) -> QueryOut | None:
-    if not row.is_public or not any(item.official for item in row.responses):
+    if not row.is_public or not any(item.official for item in items(row, "responses")):
         return None
     return QueryOut(
         id=row.id,
@@ -234,21 +257,21 @@ def _public_query(row: StudentQuery) -> QueryOut | None:
         is_public=True,
         status=row.status,
         created_at=row.created_at,
-        responses=[
-            QueryResponseOut(id=item.id, body=item.body, official=item.official, created_at=item.created_at)
-            for item in row.responses
-            if item.official
-        ],
+        responses=_responses(row, official_only=True),
     )
 
 
 def _states(hackathon: Hackathon) -> list[SectionStateOut]:
-    found = {item.section: item.state for item in hackathon.section_states}
+    found = hackathon.section_states or {}
     return [SectionStateOut(section=section, state=found.get(section, "not_specified")) for section in SECTION_KEYS]
 
 
 def to_public(
-    hackathon: Hackathon, following: bool = False, bookmarked: bool = False, stance: str | None = None
+    hackathon: Hackathon,
+    following: bool = False,
+    bookmarked: bool = False,
+    stance: str | None = None,
+    interested: bool = False,
 ) -> HackathonPublic:
     card = to_card(hackathon)
     now = datetime.now(UTC)
@@ -282,21 +305,21 @@ def to_public(
         other_rewards=hackathon.other_rewards,
         preparation_guidelines=hackathon.preparation_guidelines,
         milestones=[_milestone_out(item) for item in hackathon.milestones if item.visibility == "public"],
-        resources=[_resource_out(item) for item in hackathon.resources],
-        tracks=[TrackOut(id=item.id, name=item.name, requirements=item.requirements, position=item.position) for item in hackathon.tracks],
+        resources=[_resource_out(item) for item in items(hackathon, "resources")],
+        tracks=[TrackOut(id=item.id, name=item.name, requirements=item.requirements, position=item.position) for item in items(hackathon, "tracks")],
         deliverables=[
             DeliverableOut(id=item.id, title=item.title, detail=item.detail, required=item.required, position=item.position)
-            for item in hackathon.deliverables
+            for item in items(hackathon, "deliverables")
         ],
-        prizes=[PrizeOut(id=item.id, label=item.label, detail=item.detail, position=item.position) for item in hackathon.prizes],
+        prizes=[PrizeOut(id=item.id, label=item.label, detail=item.detail, position=item.position) for item in items(hackathon, "prizes")],
         judging_criteria=[
             JudgingOut(id=item.id, title=item.title, detail=item.detail, weight=item.weight, position=item.position)
-            for item in hackathon.judging_criteria
+            for item in items(hackathon, "judging_criteria")
         ],
-        faqs=[FaqOut(id=item.id, question=item.question, answer=item.answer, position=item.position) for item in hackathon.faqs],
+        faqs=[FaqOut(id=item.id, question=item.question, answer=item.answer, position=item.position) for item in items(hackathon, "faqs")],
         announcements=[
             AnnouncementOut(id=item.id, title=item.title, body=item.body, published_at=item.published_at, position=item.position)
-            for item in hackathon.announcements
+            for item in items(hackathon, "announcements")
             if item.published_at is not None and item.published_at <= now
         ],
         section_states=_states(hackathon),
@@ -304,6 +327,7 @@ def to_public(
         following=following,
         bookmarked=bookmarked,
         stance=stance,
+        interested=interested,
     )
 
 
@@ -314,7 +338,7 @@ def to_admin(hackathon: Hackathon) -> HackathonAdminOut:
         AnnouncementOut(
             id=item.id, title=item.title, body=item.body, published_at=item.published_at, position=item.position
         ).model_dump()
-        for item in hackathon.announcements
+        for item in items(hackathon, "announcements")
     ]
     data["queries"] = [
         QueryOut(
@@ -323,14 +347,11 @@ def to_admin(hackathon: Hackathon) -> HackathonAdminOut:
             is_public=item.is_public,
             status=item.status,
             created_at=item.created_at,
-            responses=[
-                QueryResponseOut(id=answer.id, body=answer.body, official=answer.official, created_at=answer.created_at)
-                for answer in item.responses
-            ],
+            responses=_responses(item),
         ).model_dump()
         for item in hackathon.queries
     ]
-    internal = hackathon.internal or HackathonInternal(hackathon_id=hackathon.id)
+    internal = Doc(dict(hackathon.internal or default_internal()))
     return HackathonAdminOut(
         **data,
         created_by=hackathon.created_by,
@@ -344,8 +365,8 @@ def to_admin(hackathon: Hackathon) -> HackathonAdminOut:
         ),
         coordinators=[
             CoordinatorOut(id=link.user.id, email=link.user.email, name=link.user.name, role=link.user.role)
-            for link in hackathon.admins
-            if link.user is not None
+            for link in hackathon.members
+            if link.is_admin and link.user is not None
         ],
     )
 
@@ -363,8 +384,8 @@ def _unique_slug(db: Session, name: str) -> str:
 def _snapshot(hackathon: Hackathon) -> dict:
     data = {field: jsonable(getattr(hackathon, field)) for field in SCALAR_FIELDS}
     data["lifecycle"] = hackathon.lifecycle
-    data["category_ids"] = sorted(str(item.id) for item in hackathon.categories)
-    data["labels"] = sorted(f"{item.kind}:{item.name}" for item in hackathon.tags)
+    data["category_ids"] = sorted(str(item.id) for item in items(hackathon, "categories"))
+    data["labels"] = sorted(f"{item.kind}:{item.name}" for item in items(hackathon, "labels"))
     return data
 
 
@@ -398,7 +419,7 @@ def record_history(
     db: Session,
     *,
     hackathon_id: UUID,
-    actor: User,
+    actor: User | None,
     entity_type: str,
     entity_id: UUID | None,
     action: str,
@@ -410,7 +431,7 @@ def record_history(
     db.add(
         HackathonHistory(
             hackathon_id=hackathon_id,
-            actor_id=actor.id,
+            actor_id=actor.id if actor else None,
             entity_type=entity_type,
             entity_id=entity_id,
             action=action,
@@ -448,13 +469,12 @@ def create_hackathon(db: Session, settings: Settings, actor: User, payload: Hack
         created_by=actor.id,
         lifecycle=Lifecycle.draft.value,
     )
+    hackathon.internal = default_internal()
+    hackathon.section_states = default_sections(SECTION_KEYS)
     db.add(hackathon)
     db.flush()
-    db.add(HackathonInternal(hackathon_id=hackathon.id))
-    for section in SECTION_KEYS:
-        db.add(SectionState(hackathon_id=hackathon.id, section=section, state="not_specified"))
     if actor.role == Role.coordinator.value:
-        db.add(HackathonAdmin(hackathon_id=hackathon.id, user_id=actor.id))
+        ensure_member(db, hackathon.id, actor.id).is_admin = True
     record_history(
         db,
         hackathon_id=hackathon.id,
@@ -469,30 +489,42 @@ def create_hackathon(db: Session, settings: Settings, actor: User, payload: Hack
     return get_hackathon(db, hackathon.id)
 
 
-def _apply_categories(db: Session, hackathon: Hackathon, category_ids: list[UUID]) -> None:
-    categories = list(db.scalars(select(Category).where(Category.id.in_(category_ids)))) if category_ids else []
-    if len(categories) != len(set(category_ids)):
-        raise AppError(422, "invalid_category", "One or more categories do not exist")
-    hackathon.categories = categories
+def _apply_categories(hackathon: Hackathon, category_ids: list[UUID]) -> None:
+    chosen = []
+    seen: set[UUID] = set()
+    for category_id in category_ids:
+        if category_id in seen:
+            continue
+        seen.add(category_id)
+        item = category_by_id(category_id)
+        if item is None:
+            raise AppError(422, "invalid_category", "One or more categories do not exist")
+        chosen.append({"id": str(item["id"]), "name": item["name"], "slug": item["slug"]})
+    hackathon.categories = chosen
+    touch(hackathon, "categories")
 
 
-def _apply_labels(db: Session, hackathon: Hackathon, labels: list[LabelIn]) -> None:
-    chosen: list[Tag] = []
+def _apply_labels(hackathon: Hackathon, labels: list[LabelIn]) -> None:
+    existing = {(item.kind, item.slug): item.id for item in items(hackathon, "labels")}
+    chosen = []
     seen: set[tuple[str, str]] = set()
     for label in labels:
         name = label.name.strip()
-        key = (label.kind, name.lower())
-        if key in seen:
+        slug = slugify(name)
+        key = (label.kind, slug)
+        if not name or key in seen:
             continue
         seen.add(key)
-        slug = slugify(name)
-        tag = db.scalar(select(Tag).where(Tag.slug == slug, Tag.kind == label.kind))
-        if tag is None:
-            tag = Tag(name=name, slug=slug, kind=label.kind)
-            db.add(tag)
-            db.flush()
-        chosen.append(tag)
-    hackathon.tags = chosen
+        chosen.append(
+            {
+                "id": str(existing.get(key) or uuid4()),
+                "name": name,
+                "slug": slug,
+                "kind": label.kind,
+            }
+        )
+    hackathon.labels = chosen
+    touch(hackathon, "labels")
 
 
 def update_hackathon(db: Session, actor: User, hackathon: Hackathon, payload: HackathonUpdate) -> Hackathon:
@@ -511,9 +543,9 @@ def update_hackathon(db: Session, actor: User, hackathon: Hackathon, payload: Ha
     ):
         raise AppError(422, "invalid_registration_window", "Registration cannot close before it opens")
     if category_ids is not None:
-        _apply_categories(db, hackathon, category_ids)
+        _apply_categories(hackathon, category_ids)
     if labels is not None:
-        _apply_labels(db, hackathon, [LabelIn.model_validate(item) for item in labels])
+        _apply_labels(hackathon, [LabelIn.model_validate(item) for item in labels])
     hackathon.updated_at = datetime.now(UTC)
     after = _snapshot(hackathon)
     previous, current = _diff(before, after)
@@ -528,14 +560,46 @@ def update_hackathon(db: Session, actor: User, hackathon: Hackathon, payload: Ha
         new=current or None,
     )
     db.flush()
-    return get_hackathon(db, hackathon.id)
+    refreshed = get_hackathon(db, hackathon.id)
+    notifications.reschedule_interest(db, refreshed)
+    return refreshed
+
+
+def complete_overdue(db: Session) -> int:
+    now = datetime.now(UTC)
+    rows = db.scalars(
+        select(Hackathon)
+        .where(Hackathon.lifecycle.in_((Lifecycle.published.value, Lifecycle.postponed.value)))
+        .options(*LOAD)
+    ).unique().all()
+    changed = 0
+    for hackathon in rows:
+        deadline = notifications.event_deadline(hackathon, now)
+        if deadline is None or deadline > now:
+            continue
+        previous = hackathon.lifecycle
+        hackathon.lifecycle = Lifecycle.completed.value
+        hackathon.updated_at = now
+        record_history(
+            db,
+            hackathon_id=hackathon.id,
+            actor=None,
+            entity_type="hackathon",
+            entity_id=hackathon.id,
+            action="lifecycle",
+            previous={"lifecycle": previous},
+            new={"lifecycle": Lifecycle.completed.value},
+        )
+        db.flush()
+        notifications.on_lifecycle(db, hackathon, previous=previous)
+        changed += 1
+    return changed
 
 
 def update_internal(db: Session, actor: User, hackathon: Hackathon, payload: InternalUpdate) -> Hackathon:
-    internal = hackathon.internal or HackathonInternal(hackathon_id=hackathon.id)
-    if hackathon.internal is None:
-        db.add(internal)
-        hackathon.internal = internal
+    if not hackathon.internal:
+        hackathon.internal = default_internal()
+    internal = Doc(hackathon.internal)
     before = {
         "internal_notes": internal.internal_notes,
         "tracking_status": internal.tracking_status,
@@ -555,6 +619,7 @@ def update_internal(db: Session, actor: User, hackathon: Hackathon, payload: Int
         "source_urls": internal.source_urls,
     }
     previous, current = _diff(before, after)
+    touch(hackathon, "internal")
     record_history(
         db,
         hackathon_id=hackathon.id,
@@ -604,8 +669,8 @@ def change_lifecycle(db: Session, actor: User, hackathon: Hackathon, target: str
 
 
 def delete_draft(db: Session, actor: User, hackathon: Hackathon) -> None:
-    if hackathon.lifecycle != Lifecycle.draft.value:
-        raise AppError(409, "not_draft", "Only drafts can be deleted")
+    if hackathon.lifecycle not in {Lifecycle.draft.value, Lifecycle.published.value}:
+        raise AppError(409, "not_draft", "Only drafts and published hackathons can be deleted")
     write_audit(
         db,
         action="hackathon.deleted",
@@ -651,6 +716,7 @@ def add_milestone(db: Session, actor: User, hackathon: Hackathon, payload: Miles
     )
     notifications.schedule_milestone(db, hackathon, milestone)
     notifications.announce_meeting(db, hackathon, milestone)
+    notifications.reschedule_interest(db, hackathon)
     return milestone
 
 
@@ -709,6 +775,7 @@ def update_milestone(db: Session, actor: User, hackathon: Hackathon, milestone_i
     db.flush()
     notifications.schedule_milestone(db, hackathon, milestone)
     notifications.announce_meeting(db, hackathon, milestone)
+    notifications.reschedule_interest(db, hackathon)
     return milestone
 
 
@@ -726,23 +793,26 @@ def delete_milestone(db: Session, actor: User, hackathon: Hackathon, milestone_i
     )
     notifications.cancel_milestone_jobs(db, milestone.id)
     db.delete(milestone)
+    notifications.reschedule_interest(db, hackathon)
     hackathon.updated_at = datetime.now(UTC)
 
 
-def add_resource(db: Session, actor: User, hackathon: Hackathon, payload: ResourceIn) -> Resource:
+def add_resource(db: Session, actor: User, hackathon: Hackathon, payload: ResourceIn):
     position = payload.position
     if position is None:
-        position = (max((item.position for item in hackathon.resources), default=-1)) + 1
-    resource = Resource(
-        hackathon_id=hackathon.id,
-        title=payload.title.strip(),
-        url=payload.url,
-        kind=payload.kind,
-        position=position,
+        position = (max((item.position for item in items(hackathon, "resources")), default=-1)) + 1
+    resource = append_item(
+        hackathon,
+        "resources",
+        {
+            "hackathon_id": hackathon.id,
+            "title": payload.title.strip(),
+            "url": payload.url,
+            "kind": payload.kind,
+            "position": position,
+        },
     )
-    db.add(resource)
     hackathon.updated_at = datetime.now(UTC)
-    db.flush()
     record_history(
         db,
         hackathon_id=hackathon.id,
@@ -757,7 +827,7 @@ def add_resource(db: Session, actor: User, hackathon: Hackathon, payload: Resour
 
 
 def delete_resource(db: Session, actor: User, hackathon: Hackathon, resource_id: UUID) -> None:
-    resource = next((item for item in hackathon.resources if item.id == resource_id), None)
+    resource = next((item for item in items(hackathon, "resources") if item.id == resource_id), None)
     if resource is None:
         raise AppError(404, "not_found", "Resource not found")
     record_history(
@@ -770,7 +840,7 @@ def delete_resource(db: Session, actor: User, hackathon: Hackathon, resource_id:
         previous={"title": resource.title, "url": resource.url},
         new=None,
     )
-    db.delete(resource)
+    drop_item(hackathon, "resources", resource_id)
 
 
 def assign_coordinator(db: Session, actor: User, hackathon: Hackathon, email: str) -> Hackathon:
@@ -779,9 +849,9 @@ def assign_coordinator(db: Session, actor: User, hackathon: Hackathon, email: st
         raise AppError(404, "user_not_found", "No user with that email has signed in yet")
     if user.role == Role.student.value:
         user.role = Role.coordinator.value
-    exists = any(link.user_id == user.id for link in hackathon.admins)
-    if not exists:
-        db.add(HackathonAdmin(hackathon_id=hackathon.id, user_id=user.id))
+    link = ensure_member(db, hackathon.id, user.id)
+    if not link.is_admin:
+        link.is_admin = True
         record_history(
             db,
             hackathon_id=hackathon.id,
@@ -797,7 +867,7 @@ def assign_coordinator(db: Session, actor: User, hackathon: Hackathon, email: st
 
 
 def remove_coordinator(db: Session, actor: User, hackathon: Hackathon, user_id: UUID) -> Hackathon:
-    link = next((item for item in hackathon.admins if item.user_id == user_id), None)
+    link = next((item for item in hackathon.members if item.user_id == user_id and item.is_admin), None)
     if link is None:
         raise AppError(404, "not_found", "Coordinator is not assigned")
     record_history(
@@ -810,7 +880,8 @@ def remove_coordinator(db: Session, actor: User, hackathon: Hackathon, user_id: 
         previous={"email": link.user.email if link.user else None},
         new=None,
     )
-    db.delete(link)
+    link.is_admin = False
+    prune_member(db, link)
     db.flush()
     return get_hackathon(db, hackathon.id)
 
@@ -847,12 +918,12 @@ def _filters(q: str | None, category: str | None, mode: str | None, participatio
                 Hackathon.organiser.ilike(like),
                 Hackathon.short_description.ilike(like),
                 Hackathon.description.ilike(like),
-                Hackathon.tags.any(Tag.name.ilike(like)),
-                Hackathon.categories.any(Category.name.ilike(like)),
+                cast(Hackathon.labels, String).ilike(like),
+                cast(Hackathon.categories, String).ilike(like),
             )
         )
     if category:
-        clauses.append(Hackathon.categories.any(Category.slug == category))
+        clauses.append(Hackathon.categories.contains([{"slug": category}]))
     if mode:
         clauses.append(Hackathon.mode == mode)
     if participation:
@@ -920,7 +991,9 @@ def list_admin(
     clauses = _filters(q, None, None, None, None, None, lifecycle, None)
     stmt = select(Hackathon)
     if actor.role != Role.super_admin.value:
-        stmt = stmt.join(HackathonAdmin, HackathonAdmin.hackathon_id == Hackathon.id).where(HackathonAdmin.user_id == actor.id)
+        stmt = stmt.join(HackathonMember, HackathonMember.hackathon_id == Hackathon.id).where(
+            HackathonMember.user_id == actor.id, HackathonMember.is_admin.is_(True)
+        )
     if clauses:
         stmt = stmt.where(*clauses)
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
@@ -938,7 +1011,13 @@ def list_admin(
 def scoped_ids(db: Session, actor: User) -> list[UUID] | None:
     if actor.role == Role.super_admin.value:
         return None
-    return list(db.scalars(select(HackathonAdmin.hackathon_id).where(HackathonAdmin.user_id == actor.id)).all())
+    return list(
+        db.scalars(
+            select(HackathonMember.hackathon_id).where(
+                HackathonMember.user_id == actor.id, HackathonMember.is_admin.is_(True)
+            )
+        ).all()
+    )
 
 
 def stats(db: Session, actor: User) -> StatsOut:
@@ -1014,13 +1093,40 @@ def calendar_events(
                 (Milestone.starts_at <= start) & (Milestone.ends_at >= end),
             ),
         )
-        .options(selectinload(Milestone.hackathon).selectinload(Hackathon.categories))
+        .options(selectinload(Milestone.hackathon))
         .order_by(func.coalesce(Milestone.starts_at, Milestone.ends_at).asc())
     )
     if category:
-        stmt = stmt.where(Hackathon.categories.any(Category.slug == category))
+        stmt = stmt.where(Hackathon.categories.contains([{"slug": category}]))
     if event_type:
         stmt = stmt.where(Milestone.type == event_type)
     if hackathon:
         stmt = stmt.where(Hackathon.slug == hackathon)
     return list(db.scalars(stmt).unique().all())
+
+
+def deadline_events(
+    db: Session,
+    *,
+    start: datetime,
+    end: datetime,
+    category: str | None,
+    hackathon: str | None,
+) -> list[tuple[Hackathon, datetime]]:
+    stmt = (
+        select(Hackathon)
+        .where(Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES))
+        .options(selectinload(Hackathon.milestones))
+    )
+    if category:
+        stmt = stmt.where(Hackathon.categories.contains([{"slug": category}]))
+    if hackathon:
+        stmt = stmt.where(Hackathon.slug == hackathon)
+    found: list[tuple[Hackathon, datetime]] = []
+    for row in db.scalars(stmt).unique().all():
+        when = notifications.event_deadline(row)
+        if when is None or when < start or when >= end:
+            continue
+        found.append((row, when))
+    found.sort(key=lambda item: item[1])
+    return found
