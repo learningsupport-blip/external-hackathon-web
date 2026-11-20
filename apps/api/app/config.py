@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     job_tick_secret: str = ""
     resend_api_key: str = ""
     resend_from: str = "HackHub <onboarding@resend.dev>"
+    brevo_api_key: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"
 

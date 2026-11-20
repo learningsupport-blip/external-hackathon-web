@@ -3,7 +3,6 @@
 import secrets
 from datetime import UTC, datetime, timedelta
 
-import httpx
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -12,6 +11,7 @@ from app.config import Settings
 from app.errors import AppError
 from app.models import EmailVerification, Role, Session as DbSession, User
 from app.security import hash_password, hash_token, verify_password
+from app.services.mail import deliver
 
 CODE_MINUTES = 10
 TOKEN_MINUTES = 30
@@ -134,28 +134,18 @@ def _check_choice(value: str, allowed: set[str], message: str) -> None:
 
 
 def _send(settings: Settings, email: str, code: str) -> bool:
-    if not settings.resend_api_key:
+    if not settings.brevo_api_key and not settings.resend_api_key:
         if settings.app_env == "development":
             return False
         raise AppError(503, "email_unconfigured", "Email delivery is not configured")
-    try:
-        response = httpx.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {settings.resend_api_key}"},
-            json={
-                "from": settings.resend_from,
-                "to": [email],
-                "subject": "Your HackHub verification code",
-                "text": f"Your HackHub verification code is {code}. It expires in {CODE_MINUTES} minutes.",
-            },
-            timeout=10,
-        )
-    except httpx.HTTPError as exc:
-        if settings.app_env == "development":
-            return False
-        raise AppError(502, "email_failed", "The verification email could not be sent") from exc
-    if response.status_code >= 400:
-        if settings.app_env == "development":
-            return False
-        raise AppError(502, "email_failed", "The verification email could not be sent")
-    return True
+    sent, _detail = deliver(
+        settings,
+        email,
+        "Your HackHub verification code",
+        f"Your HackHub verification code is {code}. It expires in {CODE_MINUTES} minutes.",
+    )
+    if sent:
+        return True
+    if settings.app_env == "development":
+        return False
+    raise AppError(502, "email_failed", "The verification email could not be sent")

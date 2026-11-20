@@ -1,5 +1,5 @@
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -41,6 +41,7 @@ from app.schemas import (
     HackathonPublic,
     HackathonUpdate,
     HistoryOut,
+    HomeOut,
     InternalUpdate,
     JudgingIn,
     JudgingOut,
@@ -192,6 +193,7 @@ def login(
     user = accounts.login_user(db, payload.email, payload.password)
     start_session(db, settings, user, response)
     write_audit(db, action="auth.login", actor_id=user.id, entity_type="user", entity_id=str(user.id), ip=request.client.host if request.client else None)
+    db.commit()
     return _user_out(user)
 
 
@@ -348,6 +350,59 @@ def calendar(
     return CalendarResponse(
         items=items,
         time_label="Event times are stored in UTC and labeled with each hackathon timezone",
+    )
+
+
+@router.get("/home", response_model=HomeOut)
+def home(db: Session = Depends(get_db)) -> HomeOut:
+    now = datetime.now(UTC)
+    end = now + timedelta(days=60)
+    featured, _featured_total = service.list_public(
+        db,
+        q=None,
+        category=None,
+        mode=None,
+        participation=None,
+        difficulty=None,
+        registration=None,
+        sort="recent",
+        featured=True,
+        page=1,
+        page_size=6,
+    )
+    recent, _recent_total = service.list_public(
+        db,
+        q=None,
+        category=None,
+        mode=None,
+        participation=None,
+        difficulty=None,
+        registration=None,
+        sort="recent",
+        featured=None,
+        page=1,
+        page_size=6,
+    )
+    events = service.calendar_events(db, start=now, end=end, category=None, event_type=None, hackathon=None)
+    deadlines = [
+        CalendarEvent(
+            id=item.id,
+            title=item.title,
+            hackathon_name=item.hackathon.name,
+            hackathon_slug=item.hackathon.slug,
+            type=item.type,
+            starts_at=item.starts_at,
+            ends_at=item.ends_at,
+            timezone=item.hackathon.timezone,
+        )
+        for item in events[:6]
+    ]
+    return HomeOut(
+        featured=[service.to_card(item) for item in featured],
+        recent=[service.to_card(item) for item in recent],
+        categories=[CategoryOut(id=item["id"], name=item["name"], slug=item["slug"]) for item in all_categories()],
+        due=[service.to_card(item) for item in service.due_soon(db, days=3)],
+        deadlines=deadlines,
     )
 
 
@@ -1039,4 +1094,5 @@ def job_tick(request: Request, db: Session = Depends(get_db), settings: Settings
     secret = request.headers.get("x-job-secret", "")
     if not settings.job_tick_secret or secret != settings.job_tick_secret:
         raise AppError(401, "unauthorized", "Job tick secret is missing or incorrect")
-    return {"processed": notify.tick(db, settings)}
+    completed = service.complete_overdue(db)
+    return {"processed": notify.tick(db, settings), "completed": completed}

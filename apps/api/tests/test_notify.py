@@ -72,6 +72,21 @@ def test_a_session_notice_reaches_students(client):
     assert pending == []
 
 
+def test_the_job_tick_completes_an_overdue_hackathon(client):
+    login(client, "admin@hackhub.test")
+    created = create_hackathon(client, name="Tick Cup")
+    past = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    assert client.patch(f"/api/v1/admin/hackathons/{created['id']}", json={"submission_deadline": past}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{created['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    refused = client.post("/api/v1/internal/jobs/tick")
+    assert refused.status_code == 401
+    ticked = client.post("/api/v1/internal/jobs/tick", headers={"x-job-secret": "test-tick"})
+    assert ticked.status_code == 200, ticked.text
+    assert ticked.json()["completed"] >= 1
+    public = client.get(f"/api/v1/hackathons/{created['slug']}")
+    assert public.json()["lifecycle"] == "completed"
+
+
 def test_an_extra_notice_reaches_every_student(client):
     login(client, "student@hackhub.test", "Sam Student")
     client.post("/api/v1/auth/logout")
