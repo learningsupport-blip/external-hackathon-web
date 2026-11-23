@@ -87,6 +87,34 @@ def test_the_job_tick_completes_an_overdue_hackathon(client):
     assert public.json()["lifecycle"] == "completed"
 
 
+def test_a_passed_deadline_leaves_student_bookmarks(client):
+    login(client, "student@hackhub.test", "Sam Student")
+    client.post("/api/v1/auth/logout")
+    login(client, "admin@hackhub.test")
+    finished = create_hackathon(client, name="Finished Cup")
+    staying = create_hackathon(client, name="Still Open Cup")
+    past = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    future = (datetime.now(UTC) + timedelta(days=10)).isoformat()
+    assert client.patch(f"/api/v1/admin/hackathons/{finished['id']}", json={"submission_deadline": past}).status_code == 200
+    assert client.patch(f"/api/v1/admin/hackathons/{staying['id']}", json={"submission_deadline": future}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{finished['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{staying['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    client.post("/api/v1/auth/logout")
+    login(client, "student@hackhub.test", "Sam Student")
+    assert client.post(f"/api/v1/hackathons/{finished['slug']}/bookmark").status_code == 204
+    assert client.post(f"/api/v1/hackathons/{staying['slug']}/bookmark").status_code == 204
+    assert client.put(f"/api/v1/hackathons/{finished['slug']}/stance", json={"stance": "registered"}).status_code == 204
+    listed = client.get("/api/v1/me/bookmarks")
+    assert listed.status_code == 200, listed.text
+    slugs = [item["slug"] for item in listed.json()]
+    assert finished["slug"] not in slugs
+    assert staying["slug"] in slugs
+    public = client.get(f"/api/v1/hackathons/{finished['slug']}")
+    assert public.json()["lifecycle"] == "completed"
+    active = client.get("/api/v1/me/stances?active=true")
+    assert finished["slug"] not in [item["hackathon_slug"] for item in active.json()]
+
+
 def test_an_extra_notice_reaches_every_student(client):
     login(client, "student@hackhub.test", "Sam Student")
     client.post("/api/v1/auth/logout")

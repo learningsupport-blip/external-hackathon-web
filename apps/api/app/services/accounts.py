@@ -134,7 +134,7 @@ def _check_choice(value: str, allowed: set[str], message: str) -> None:
 
 
 def _send(settings: Settings, email: str, code: str) -> bool:
-    if not settings.brevo_api_key and not settings.resend_api_key:
+    if not settings.resend_api_key:
         if settings.app_env == "development":
             return False
         raise AppError(503, "email_unconfigured", "Email delivery is not configured")

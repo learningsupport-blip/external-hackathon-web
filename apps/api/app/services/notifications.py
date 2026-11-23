@@ -372,8 +372,8 @@ def schedule_announcement(db: Session, hackathon: Hackathon, announcement) -> No
 
 
 def _email(settings: Settings, user: User, title: str, body: str) -> tuple[str, str | None]:
-    if not settings.brevo_api_key and not settings.resend_api_key:
-        return "skipped", "No email provider configured"
+    if not settings.resend_api_key:
+        return "skipped", "Resend is not configured"
     sent, detail = deliver(settings, user.email, title, body)
     if sent:
         return "sent", None

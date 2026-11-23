@@ -67,6 +67,11 @@ app.add_middleware(
 register_error_handlers(app)
 app.include_router(router)
 
+
+@app.get("/")
+def root() -> dict:
+    return {"status": "ok"}
+
 _PUBLIC_CATALOG = {"/api/v1/home", "/api/v1/categories", "/api/v1/calendar", "/api/v1/hackathons", "/api/v1/hackathons/due"}
 
 

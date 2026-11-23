@@ -410,6 +410,7 @@ def home(db: Session = Depends(get_db)) -> HomeOut:
 def admin_stats(request: Request, db: Session = Depends(get_db)) -> StatsOut:
     user = require_user(request, db)
     require_staff(user)
+    service.complete_overdue(db)
     return service.stats(db, user)
 
 
@@ -427,6 +428,7 @@ def admin_hackathons(
     require_staff(user)
     if sort not in {"updated", "name", "deadline"}:
         raise AppError(422, "invalid_sort", "Unknown sort")
+    service.complete_overdue(db)
     rows, total = service.list_admin(db, user, q=q, lifecycle=lifecycle, sort=sort, page=page, page_size=page_size)
     return AdminPage(items=[service.to_card(item) for item in rows], page=page, page_size=page_size, total=total)
 
@@ -993,12 +995,16 @@ def _admin_query(row) -> AdminQueryOut:
 
 @router.get("/me/following", response_model=list[HackathonCard])
 def my_following(request: Request, db: Session = Depends(get_db)) -> list[HackathonCard]:
-    return content.my_following(db, require_user(request, db))
+    user = require_user(request, db)
+    service.complete_overdue(db)
+    return content.my_following(db, user)
 
 
 @router.get("/me/bookmarks", response_model=list[HackathonCard])
 def my_bookmarks(request: Request, db: Session = Depends(get_db)) -> list[HackathonCard]:
-    return content.my_bookmarks(db, require_user(request, db))
+    user = require_user(request, db)
+    service.complete_overdue(db)
+    return content.my_bookmarks(db, user)
 
 
 @router.get("/me/interests", response_model=list[str])
@@ -1008,9 +1014,11 @@ def my_interests(request: Request, db: Session = Depends(get_db)) -> list[str]:
 
 
 @router.get("/me/stances", response_model=list[StanceOut])
-def my_stances(request: Request, db: Session = Depends(get_db)) -> list[StanceOut]:
+def my_stances(request: Request, db: Session = Depends(get_db), active: bool = False) -> list[StanceOut]:
     user = require_user(request, db)
-    return [StanceOut(hackathon_slug=slug, stance=stance) for slug, stance in content.my_stances(db, user)]
+    if active:
+        service.complete_overdue(db)
+    return [StanceOut(hackathon_slug=slug, stance=stance) for slug, stance in content.my_stances(db, user, active=active)]
 
 
 @router.get("/me/queries", response_model=list[MyQueryOut])

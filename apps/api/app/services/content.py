@@ -9,6 +9,7 @@ from app.documents import append_item, drop_item, items, touch
 from app.errors import AppError
 from app.members import ensure_member, get_member, prune_member
 from app.models import (
+    ACTIVE_LIFECYCLES,
     PUBLIC_LIFECYCLES,
     SECTION_KEYS,
     Hackathon,
@@ -449,7 +450,7 @@ def _saved(db: Session, user_id, column):
     rows = db.scalars(
         select(Hackathon)
         .join(HackathonMember, HackathonMember.hackathon_id == Hackathon.id)
-        .where(HackathonMember.user_id == user_id, column.is_not(None), Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES))
+        .where(HackathonMember.user_id == user_id, column.is_not(None), Hackathon.lifecycle.in_(ACTIVE_LIFECYCLES))
         .order_by(column.desc())
     ).unique().all()
     return [to_card(row) for row in rows]
@@ -515,14 +516,15 @@ def clear_stance(db: Session, user: User, hackathon: Hackathon) -> None:
         prune_member(db, row)
 
 
-def my_stances(db: Session, user: User) -> list[tuple[str, str]]:
+def my_stances(db: Session, user: User, *, active: bool = False) -> list[tuple[str, str]]:
+    lifecycles = ACTIVE_LIFECYCLES if active else PUBLIC_LIFECYCLES
     rows = db.execute(
         select(Hackathon.slug, HackathonMember.stance)
         .join(Hackathon, Hackathon.id == HackathonMember.hackathon_id)
         .where(
             HackathonMember.user_id == user.id,
             HackathonMember.stance.is_not(None),
-            Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES),
+            Hackathon.lifecycle.in_(lifecycles),
         )
         .order_by(Hackathon.updated_at.desc())
     ).all()

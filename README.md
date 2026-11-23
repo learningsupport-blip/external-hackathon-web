@@ -35,7 +35,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. In development, sign in at `/login` with `admin@hackhub.local`. Sample titles start with `[Sample]` and can be deleted from the admin list while they are drafts, or archived after publish.
+Open http://localhost:3000. In development, sign in at `/login` with `admin@hackhub.local`.
 
 `scripts/seed.py` refuses to run unless `APP_ENV=development`.
 
