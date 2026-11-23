@@ -11,11 +11,13 @@ async function requestApi<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && init?.body) headers.set("Content-Type", "application/json");
   const base = process.env.API_URL || "http://localhost:8000";
-  const jar = await cookies();
-  const cookie = jar.toString();
-  if (cookie) headers.set("cookie", cookie);
   const method = (init?.method || "GET").toUpperCase();
   const reusable = method === "GET" && isPublicCatalog(path);
+  if (!reusable) {
+    const jar = await cookies();
+    const cookie = jar.toString();
+    if (cookie) headers.set("cookie", cookie);
+  }
   const response = await fetch(`${base}${path}`, {
     ...init,
     headers,

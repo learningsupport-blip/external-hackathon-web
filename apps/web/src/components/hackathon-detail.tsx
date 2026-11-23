@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   ArrowUpRight,
   BookOpen,
@@ -186,7 +185,7 @@ export function HackathonDetail({ hackathon, signedIn = false }: { hackathon: Ha
       <header className="rise overflow-hidden rounded-3xl border-[1.5px] border-ink bg-card shadow-[6px_6px_0_var(--ink)]">
         {hackathon.banner_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img alt="" className="h-56 w-full border-b-[1.5px] border-ink object-cover" src={hackathon.banner_url} />
+          <img alt="" className="h-56 w-full border-b-[1.5px] border-ink object-cover" decoding="async" loading="lazy" src={hackathon.banner_url} />
         ) : (
           <div aria-hidden="true" className="ink-grid h-3" />
         )}
@@ -441,11 +440,6 @@ export function HackathonDetail({ hackathon, signedIn = false }: { hackathon: Ha
       <aside className="h-fit rounded-2xl border-[1.5px] border-ink bg-card p-4 shadow-[4px_4px_0_var(--ink)] lg:sticky lg:top-20">
         <p className="mb-3 font-mono text-[11px] font-bold uppercase tracking-widest text-muted">Your tracker</p>
         <StudentPanel bookmarked={hackathon.bookmarked} following={hackathon.following} interested={hackathon.interested} registrationState={hackathon.registration_state} signedIn={signedIn} slug={hackathon.slug} stance={hackathon.stance} />
-        {!signedIn ? (
-          <p className="mt-3 border-t border-dashed border-line pt-3 text-sm text-muted">
-            <Link className="font-semibold text-accent" href="/login">Log in</Link> to follow this hackathon, bookmark it, or ask a question.
-          </p>
-        ) : null}
       </aside>
     </div>
   );

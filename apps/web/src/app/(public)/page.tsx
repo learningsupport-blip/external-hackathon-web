@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { ArrowRight, CalendarClock, Flame, Search, Sparkles, Star } from "lucide-react";
+import { ArrowRight, CalendarClock, Flame, Lock, Search, Sparkles, Star } from "lucide-react";
 import { ApiError, api } from "@/lib/api";
 import { formatWhen, timeLeft } from "@/lib/format";
 import type { CalendarEvent, Category, HackathonCard, HomePayload } from "@/lib/types";
-import { viewerContext } from "@/lib/viewer";
 import { DateTimeline } from "@/components/date-timeline";
 import { HackathonCardView } from "@/components/hackathon-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -30,14 +29,15 @@ export default async function HomePage() {
   let featured: HackathonCard[] = [];
   let deadlines: CalendarEvent[] = [];
   let due: HackathonCard[] = [];
+  let registrationClosed: HackathonCard[] = [];
   let categories: Category[] = [];
-  const viewer = await viewerContext();
   try {
     const home = await api<HomePayload>("/api/v1/home");
     featured = home.featured;
     deadlines = home.deadlines;
     categories = home.categories;
     due = home.due;
+    registrationClosed = home.registration_closed ?? [];
   } catch (error) {
     failed = !(error instanceof ApiError) || error.status >= 500 || error.status === 0;
     if (error instanceof ApiError && error.status < 500) failed = true;
@@ -117,7 +117,7 @@ export default async function HomePage() {
           </Link>
         </SectionTitle>
         {due.length ? (
-          <div className="mt-5 grid gap-5 md:grid-cols-2">{due.map((item) => <HackathonCardView key={item.id} hackathon={item} interested={Boolean(viewer.interests[item.slug])} layout="detailed" signedIn={viewer.signedIn} stance={viewer.stances[item.slug] || null} />)}</div>
+          <div className="mt-5 grid gap-5 md:grid-cols-2">{due.map((item) => <HackathonCardView key={item.id} hackathon={item} layout="detailed" />)}</div>
         ) : null}
         {deadlines.length ? (
           <div className="pop mt-5 p-4 md:p-6">
@@ -151,11 +151,17 @@ export default async function HomePage() {
           </Link>
         </SectionTitle>
         {featured.length ? (
-          <div className="mt-5 grid gap-5 md:grid-cols-2">{featured.map((item) => <HackathonCardView key={item.id} hackathon={item} interested={Boolean(viewer.interests[item.slug])} layout="detailed" signedIn={viewer.signedIn} stance={viewer.stances[item.slug] || null} />)}</div>
+          <div className="mt-5 grid gap-5 md:grid-cols-2">{featured.map((item) => <HackathonCardView key={item.id} hackathon={item} layout="detailed" />)}</div>
         ) : (
           <div className="mt-5"><EmptyState title="No featured hackathons" body="Published events marked featured will show here." /></div>
         )}
       </section>
+      {registrationClosed.length ? (
+        <section className="rise" style={{ "--i": 3 } as React.CSSProperties}>
+          <SectionTitle icon={<Lock className="h-5 w-5" />} tone="bg-sky" title="Registration closed" body="Registration has ended, so these stay off Explore." />
+          <div className="mt-5 grid gap-5 md:grid-cols-2">{registrationClosed.map((item) => <HackathonCardView key={item.id} hackathon={item} layout="detailed" />)}</div>
+        </section>
+      ) : null}
     </div>
   );
 }

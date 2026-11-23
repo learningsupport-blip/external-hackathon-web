@@ -192,6 +192,33 @@ def test_a_deadline_inside_three_days_is_listed_automatically(client):
     body = listed.json()
     assert [item["name"] for item in body] == ["Due this week"]
     assert body[0]["next_deadline_title"] == "Submission deadline"
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.database import SessionLocal
+    from app.services.hackathons import due_soon
+
+    db = SessionLocal()
+    try:
+        rows = due_soon(db, days=3)
+        assert [row.name for row in rows] == ["Due this week"]
+        state = sa_inspect(rows[0])
+        assert "members" in state.unloaded
+        assert "queries" in state.unloaded
+        assert "milestones" not in state.unloaded
+    finally:
+        db.close()
+
+
+def test_viewer_summary_is_one_payload(client):
+    login(client, "ada@hackhub.test", "Ada")
+    summary = client.get("/api/v1/me/summary")
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["user"]["email"] == "ada@hackhub.test"
+    assert body["stances"] == []
+    assert body["interests"] == []
+    client.post("/api/v1/auth/logout")
+    assert client.get("/api/v1/me/summary").status_code == 401
 
 
 def test_home_returns_featured_recent_and_due_together(client):
@@ -209,3 +236,38 @@ def test_home_returns_featured_recent_and_due_together(client):
     assert any(item["name"] == "Home Due" for item in body["recent"])
     assert any(item["name"] == "Home Due" for item in body["featured"])
     assert "deadlines" in body
+    assert body["registration_closed"] == []
+
+
+def test_explore_hides_passed_submissions_and_closed_registration(client):
+    login(client, "admin@hackhub.test")
+    now = datetime.now(UTC)
+    open_one = create_hackathon(client, name="Still Open")
+    closed = create_hackathon(client, name="Registration Over")
+    finished = create_hackathon(client, name="Submission Over")
+    assert client.patch(
+        f"/api/v1/admin/hackathons/{open_one['id']}",
+        json={"registration_closes_at": (now + timedelta(days=4)).isoformat(), "submission_deadline": (now + timedelta(days=8)).isoformat()},
+    ).status_code == 200
+    assert client.patch(
+        f"/api/v1/admin/hackathons/{closed['id']}",
+        json={"registration_closes_at": (now - timedelta(days=1)).isoformat(), "submission_deadline": (now + timedelta(days=6)).isoformat()},
+    ).status_code == 200
+    assert client.patch(
+        f"/api/v1/admin/hackathons/{finished['id']}",
+        json={"registration_closes_at": (now - timedelta(days=3)).isoformat(), "submission_deadline": (now - timedelta(hours=2)).isoformat()},
+    ).status_code == 200
+    for item in (open_one, closed, finished):
+        assert client.post(f"/api/v1/admin/hackathons/{item['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+
+    names = [item["name"] for item in client.get("/api/v1/hackathons").json()["items"]]
+    assert "Still Open" in names
+    assert "Registration Over" not in names
+    assert "Submission Over" not in names
+
+    home = client.get("/api/v1/home").json()
+    closed_names = [item["name"] for item in home["registration_closed"]]
+    assert closed_names == ["Registration Over"]
+    assert "Registration Over" not in [item["name"] for item in home["featured"]]
+    assert "Registration Over" not in [item["name"] for item in home["recent"]]
+    assert "Submission Over" not in closed_names

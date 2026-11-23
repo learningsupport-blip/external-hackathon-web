@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import Select, String, cast, func, or_, select
+from sqlalchemy import Select, String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.catalog import category_by_id
@@ -102,6 +102,7 @@ LOAD = (
     selectinload(Hackathon.members).selectinload(HackathonMember.user),
     selectinload(Hackathon.queries),
 )
+CARD_LOAD = (selectinload(Hackathon.milestones),)
 
 STANDARD_MILESTONES = (
     ("Registration opens", "registration_opens"),
@@ -150,10 +151,23 @@ def next_deadline(hackathon: Hackathon, now: datetime | None = None) -> tuple[da
 def due_soon(db: Session, *, days: int = 3) -> list[Hackathon]:
     now = datetime.now(UTC)
     horizon = now + timedelta(days=days)
+    milestone_when = func.coalesce(Milestone.ends_at, Milestone.starts_at)
+    soon_ids = select(Milestone.hackathon_id).where(
+        Milestone.visibility == "public",
+        milestone_when >= now,
+        milestone_when <= horizon,
+    )
     rows = db.scalars(
         select(Hackathon)
-        .where(Hackathon.lifecycle.in_((Lifecycle.published.value, Lifecycle.postponed.value)))
-        .options(*LOAD)
+        .where(
+            Hackathon.lifecycle.in_((Lifecycle.published.value, Lifecycle.postponed.value)),
+            or_(
+                Hackathon.id.in_(soon_ids),
+                and_(Hackathon.registration_closes_at >= now, Hackathon.registration_closes_at <= horizon),
+                and_(Hackathon.submission_deadline >= now, Hackathon.submission_deadline <= horizon),
+            ),
+        )
+        .options(*CARD_LOAD)
     ).unique().all()
     ranked: list[tuple[datetime, Hackathon]] = []
     for hackathon in rows:
@@ -964,6 +978,23 @@ def _order(stmt: Select, sort: str) -> Select:
     return stmt.order_by(Hackathon.published_at.desc().nulls_last(), Hackathon.created_at.desc())
 
 
+def registration_closed(db: Session, *, limit: int = 12) -> list[Hackathon]:
+    now = datetime.now(UTC)
+    stmt = (
+        select(Hackathon)
+        .where(
+            Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES),
+            Hackathon.registration_closes_at.is_not(None),
+            Hackathon.registration_closes_at < now,
+            or_(Hackathon.submission_deadline.is_(None), Hackathon.submission_deadline > now),
+        )
+        .options(*CARD_LOAD)
+        .order_by(Hackathon.registration_closes_at.desc(), Hackathon.name.asc())
+        .limit(limit)
+    )
+    return list(db.scalars(stmt).unique().all())
+
+
 def list_public(
     db: Session,
     *,
@@ -977,10 +1008,23 @@ def list_public(
     featured: bool | None,
     page: int,
     page_size: int,
+    browse: bool = True,
 ) -> tuple[list[Hackathon], int]:
-    clauses = [Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES), *_filters(q, category, mode, participation, difficulty, registration, None, featured)]
+    now = datetime.now(UTC)
+    if browse:
+        scope = [
+            Hackathon.lifecycle.in_((Lifecycle.published.value, Lifecycle.postponed.value)),
+            or_(Hackathon.submission_deadline.is_(None), Hackathon.submission_deadline > now),
+            or_(Hackathon.registration_closes_at.is_(None), Hackathon.registration_closes_at >= now),
+        ]
+    else:
+        scope = [Hackathon.lifecycle.in_(PUBLIC_LIFECYCLES)]
+    clauses = [
+        *scope,
+        *_filters(q, category, mode, participation, difficulty, registration, None, featured),
+    ]
     total = db.scalar(select(func.count(func.distinct(Hackathon.id))).where(*clauses)) or 0
-    stmt = _order(select(Hackathon).where(*clauses).options(*LOAD), sort)
+    stmt = _order(select(Hackathon).where(*clauses).options(*CARD_LOAD), sort)
     rows = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).unique().all()
     return list(rows), total
 

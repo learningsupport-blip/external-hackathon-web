@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Bell, Bookmark } from "lucide-react";
 import { readError } from "@/lib/http";
 import { HackathonSignals } from "@/components/hackathon-signals";
+import { useViewer } from "@/lib/viewer-store";
 
 export function StudentPanel({
   slug,
@@ -22,13 +24,24 @@ export function StudentPanel({
   interested?: boolean;
   registrationState: string;
 }) {
+  const viewer = useViewer();
+  const signedInNow = Boolean(viewer?.user) || signedIn;
   const [followed, setFollowed] = useState(following);
   const [saved, setSaved] = useState(bookmarked);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  if (!signedIn) {
-    return <HackathonSignals interested={false} registrationState={registrationState} signedIn={false} slug={slug} stance={null} />;
+  if (!signedInNow) {
+    return (
+      <>
+        <HackathonSignals interested={false} registrationState={registrationState} signedIn={false} slug={slug} stance={null} />
+        {viewer ? (
+          <p className="mt-3 border-t border-dashed border-line pt-3 text-sm text-muted">
+            <Link className="font-semibold text-accent" href="/login">Log in</Link> to follow this hackathon, bookmark it, or ask a question.
+          </p>
+        ) : null}
+      </>
+    );
   }
 
   async function toggle(path: string, next: boolean, set: (value: boolean) => void, on: string, off: string) {

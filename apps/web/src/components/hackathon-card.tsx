@@ -48,7 +48,7 @@ export function HackathonCardView({
   const markBox = "h-11 w-11 shrink-0 rounded-xl border-[1.5px] border-ink transition-transform duration-200 group-hover:-rotate-6 group-hover:scale-105";
   const mark = hackathon.organiser_logo_url ? (
     // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" className={`${markBox} object-cover`} src={hackathon.organiser_logo_url} />
+    <img alt="" className={`${markBox} object-cover`} decoding="async" loading="lazy" src={hackathon.organiser_logo_url} />
   ) : (
     <div className={`${markBox} grid place-items-center font-display text-lg font-extrabold ${markTone(hackathon.organiser)}`}>{initial}</div>
   );

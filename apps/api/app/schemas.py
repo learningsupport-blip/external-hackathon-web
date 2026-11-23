@@ -501,6 +501,12 @@ class StanceOut(BaseModel):
     stance: str
 
 
+class ViewerSummaryOut(BaseModel):
+    user: UserOut
+    stances: list[StanceOut]
+    interests: list[str]
+
+
 class QueryIn(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
     is_public: bool = False
@@ -956,6 +962,7 @@ class HomeOut(BaseModel):
     categories: list[CategoryOut]
     due: list[HackathonCard]
     deadlines: list[CalendarEvent]
+    registration_closed: list[HackathonCard]
 
 
 class ImportUrlIn(BaseModel):

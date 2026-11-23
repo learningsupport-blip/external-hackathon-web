@@ -2,12 +2,9 @@ import Link from "next/link";
 import { ArrowLeft, ArrowRight, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Category, HackathonCard, PageResult } from "@/lib/types";
-import { viewerContext } from "@/lib/viewer";
 import { HackathonCardView } from "@/components/hackathon-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-
-export const dynamic = "force-dynamic";
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -28,10 +25,9 @@ export default async function HackathonsPage({ searchParams }: { searchParams: P
   if (!query.get("page")) query.set("page", "1");
   const apiQuery = new URLSearchParams(query);
   apiQuery.delete("view");
-  const [page, categories, viewer] = await Promise.all([
+  const [page, categories] = await Promise.all([
     api<PageResult<HackathonCard>>(`/api/v1/hackathons?${apiQuery.toString()}`),
     api<Category[]>("/api/v1/categories"),
-    viewerContext(),
   ]);
   const current = Number(query.get("page") || "1");
   const pages = Math.max(1, Math.ceil(page.total / page.page_size));
@@ -93,8 +89,6 @@ export default async function HackathonsPage({ searchParams }: { searchParams: P
                 <option value="">Any state</option>
                 <option value="open">Registration open</option>
                 <option value="upcoming">Upcoming</option>
-                <option value="closed">Registration closed</option>
-                <option value="completed">Completed</option>
               </select>
             </label>
             <label className={label}>Sort
@@ -114,7 +108,7 @@ export default async function HackathonsPage({ searchParams }: { searchParams: P
             <div className={view === "detailed" ? "grid gap-5" : "grid gap-5 md:grid-cols-2"}>
               {page.items.map((item, index) => (
                 <div key={item.id} className="rise" style={{ "--i": Math.min(index, 8) } as React.CSSProperties}>
-                <HackathonCardView hackathon={item} interested={Boolean(viewer.interests[item.slug])} layout={view} signedIn={viewer.signedIn} stance={viewer.stances[item.slug] || null} />
+                <HackathonCardView hackathon={item} layout={view} />
                 </div>
               ))}
             </div>

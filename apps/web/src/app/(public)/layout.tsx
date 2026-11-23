@@ -1,10 +1,14 @@
+import { Suspense } from "react";
 import Link from "next/link";
-import { SiteHeader } from "@/components/site-header";
+import { HeaderFrame, SiteHeader } from "@/components/site-header";
+import { SignInLink } from "@/components/header-account";
 
 export default function PublicLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <SiteHeader />
+      <Suspense fallback={<HeaderFrame account={<SignInLink />} />}>
+        <SiteHeader />
+      </Suspense>
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8" data-shell="public">{children}</main>
       <footer className="mt-8 border-t-[1.5px] border-ink bg-card">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-5 text-sm">

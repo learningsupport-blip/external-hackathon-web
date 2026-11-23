@@ -166,6 +166,7 @@ export type HomePayload = {
   categories: Category[];
   due: HackathonCard[];
   deadlines: CalendarEvent[];
+  registration_closed: HackathonCard[];
 };
 
 export type PageResult<T> = { items: T[]; page: number; page_size: number; total: number };

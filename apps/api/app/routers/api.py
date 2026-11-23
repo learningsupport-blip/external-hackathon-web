@@ -77,6 +77,7 @@ from app.schemas import (
     TrackIn,
     TrackOut,
     UserOut,
+    ViewerSummaryOut,
 )
 from app.services import accounts, content, importing, notifications as notify, sheets
 from app.security import (
@@ -257,6 +258,7 @@ def list_hackathons(
     registration: str | None = None,
     sort: str = "recent",
     featured: bool | None = None,
+    browse: bool = True,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=12, ge=1, le=50),
     db: Session = Depends(get_db),
@@ -275,6 +277,7 @@ def list_hackathons(
         featured=featured,
         page=page,
         page_size=page_size,
+        browse=browse,
     )
     return _page_card(rows, total, page, page_size)
 
@@ -403,6 +406,7 @@ def home(db: Session = Depends(get_db)) -> HomeOut:
         categories=[CategoryOut(id=item["id"], name=item["name"], slug=item["slug"]) for item in all_categories()],
         due=[service.to_card(item) for item in service.due_soon(db, days=3)],
         deadlines=deadlines,
+        registration_closed=[service.to_card(item) for item in service.registration_closed(db)],
     )
 
 
@@ -990,6 +994,16 @@ def _admin_query(row) -> AdminQueryOut:
         assignee_name=row.assignee.name if row.assignee else None,
         created_at=row.created_at,
         responses=content.query_out(row).responses,
+    )
+
+
+@router.get("/me/summary", response_model=ViewerSummaryOut)
+def my_summary(request: Request, db: Session = Depends(get_db), active: bool = False) -> ViewerSummaryOut:
+    user = require_user(request, db)
+    return ViewerSummaryOut(
+        user=_user_out(user),
+        stances=[StanceOut(hackathon_slug=slug, stance=stance) for slug, stance in content.my_stances(db, user, active=active)],
+        interests=content.my_interests(db, user),
     )
 
 

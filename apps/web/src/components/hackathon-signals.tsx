@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { readError } from "@/lib/http";
+import { useViewer } from "@/lib/viewer-store";
 
 type Stance = "registered" | "missed" | null;
 
@@ -19,8 +20,19 @@ export function HackathonSignals({
   interested?: boolean;
   registrationState: string;
 }) {
-  const [current, setCurrent] = useState<Stance>(stance);
-  const [starred, setStarred] = useState(interested);
+  const viewer = useViewer();
+  const live = Boolean(viewer?.user);
+  const active = live || signedIn;
+  const stanceNow = live ? viewer?.stances[slug] ?? null : stance;
+  const interestedNow = live ? Boolean(viewer?.interests[slug]) : interested;
+  const [current, setCurrent] = useState<Stance>(stanceNow);
+  const [starred, setStarred] = useState(interestedNow);
+  const [source, setSource] = useState({ active, stance: stanceNow, interested: interestedNow });
+  if (source.active !== active || source.stance !== stanceNow || source.interested !== interestedNow) {
+    setSource({ active, stance: stanceNow, interested: interestedNow });
+    setCurrent(stanceNow);
+    setStarred(interestedNow);
+  }
   const [ask, setAsk] = useState(false);
   const [body, setBody] = useState("");
   const [isPublic, setIsPublic] = useState(false);
@@ -29,7 +41,7 @@ export function HackathonSignals({
   const closed = registrationState === "closed" || registrationState === "completed";
 
   async function choose(next: Exclude<Stance, null>) {
-    if (!signedIn) return;
+    if (!active) return;
     setError(null);
     const clearing = current === next;
     const response = await fetch(`/api/v1/hackathons/${slug}/stance`, {
@@ -46,7 +58,7 @@ export function HackathonSignals({
   }
 
   async function toggleInterest() {
-    if (!signedIn) return;
+    if (!active) return;
     setError(null);
     const response = await fetch(`/api/v1/hackathons/${slug}/interest`, { method: starred ? "DELETE" : "PUT" });
     if (!response.ok) {
@@ -65,7 +77,7 @@ export function HackathonSignals({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        {signedIn ? (
+        {active ? (
           <button aria-pressed={current === "registered"} className={`${up} ${upOn}`} onClick={() => choose("registered")} title="I registered" type="button">
             <Thumb />
             <span className="sr-only">I registered</span>
@@ -75,7 +87,7 @@ export function HackathonSignals({
             <Thumb />
           </Link>
         )}
-        {signedIn ? (
+        {active ? (
           <button aria-pressed={current === "missed"} className={`${up} ${downOn}`} onClick={() => choose("missed")} title="I missed this" type="button">
             <Thumb down />
             <span className="sr-only">I missed this</span>
@@ -85,7 +97,7 @@ export function HackathonSignals({
             <Thumb down />
           </Link>
         )}
-        {signedIn ? (
+        {active ? (
           <button aria-pressed={starred} className={`${up} sig-interest`} onClick={() => void toggleInterest()} title="Interested" type="button">
             <Star />
             <span className="sr-only">Interested</span>
@@ -95,7 +107,7 @@ export function HackathonSignals({
             <Star />
           </Link>
         )}
-        {signedIn ? (
+        {active ? (
           <button aria-expanded={ask} className={`${up} ${askOn}`} onClick={() => setAsk((value) => !value)} title="Ask a question" type="button">
             ?
             <span className="sr-only">Ask a question</span>
@@ -109,7 +121,7 @@ export function HackathonSignals({
           {current === "registered" ? "Registered" : current === "missed" ? "Missed" : starred ? "Interested" : closed ? "Registration closed" : "Mark yours"}
         </span>
       </div>
-      {ask && signedIn ? (
+      {ask && active ? (
         <form
           className="rise grid gap-2 rounded-xl border-[1.5px] border-ink bg-tint p-3"
           onSubmit={async (event) => {

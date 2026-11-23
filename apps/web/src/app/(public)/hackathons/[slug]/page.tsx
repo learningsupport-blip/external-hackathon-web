@@ -9,14 +9,7 @@ export default async function HackathonPage({ params }: { params: Promise<{ slug
   const { slug } = await params;
   try {
     const hackathon = await api<HackathonPublic>(`/api/v1/hackathons/${slug}`);
-    let signedIn = false;
-    try {
-      await api("/api/v1/auth/me");
-      signedIn = true;
-    } catch (authError) {
-      if (!(authError instanceof ApiError) || authError.status !== 401) throw authError;
-    }
-    return <HackathonDetail hackathon={hackathon} signedIn={signedIn} />;
+    return <HackathonDetail hackathon={hackathon} />;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) notFound();
     throw error;
