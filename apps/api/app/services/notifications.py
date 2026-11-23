@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import Settings, get_settings
+from app.services.mail import deliver
 from app.documents import items
 from app.models import (
     PUBLIC_LIFECYCLES,
@@ -373,19 +373,11 @@ def schedule_announcement(db: Session, hackathon: Hackathon, announcement) -> No
 
 def _email(settings: Settings, user: User, title: str, body: str) -> tuple[str, str | None]:
     if not settings.resend_api_key:
-        return "skipped", "No email provider configured"
-    try:
-        response = httpx.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {settings.resend_api_key}"},
-            json={"from": settings.resend_from, "to": [user.email], "subject": title, "text": body},
-            timeout=10,
-        )
-    except httpx.HTTPError as exc:
-        return "failed", str(exc)[:300]
-    if response.status_code >= 400:
-        return "failed", response.text[:300]
-    return "sent", None
+        return "skipped", "Resend is not configured"
+    sent, detail = deliver(settings, user.email, title, body)
+    if sent:
+        return "sent", None
+    return "failed", detail or "The email could not be sent"
 
 
 def _message(db: Session, job: NotificationJob) -> tuple[str, str]:

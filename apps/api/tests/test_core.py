@@ -192,3 +192,20 @@ def test_a_deadline_inside_three_days_is_listed_automatically(client):
     body = listed.json()
     assert [item["name"] for item in body] == ["Due this week"]
     assert body[0]["next_deadline_title"] == "Submission deadline"
+
+
+def test_home_returns_featured_recent_and_due_together(client):
+    login(client, "admin@hackhub.test")
+    soon = create_hackathon(client, name="Home Due")
+    near = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+    assert client.patch(f"/api/v1/admin/hackathons/{soon['id']}", json={"submission_deadline": near, "featured": True}).status_code == 200
+    assert client.post(f"/api/v1/admin/hackathons/{soon['id']}/lifecycle", json={"lifecycle": "published"}).status_code == 200
+    home = client.get("/api/v1/home")
+    assert home.status_code == 200
+    assert "s-maxage=60" in home.headers["cache-control"]
+    body = home.json()
+    assert body["categories"]
+    assert [item["name"] for item in body["due"]] == ["Home Due"]
+    assert any(item["name"] == "Home Due" for item in body["recent"])
+    assert any(item["name"] == "Home Due" for item in body["featured"])
+    assert "deadlines" in body

@@ -42,6 +42,7 @@ class Lifecycle(str, enum.Enum):
 
 
 PUBLIC_LIFECYCLES = (Lifecycle.published.value, Lifecycle.postponed.value, Lifecycle.completed.value)
+ACTIVE_LIFECYCLES = (Lifecycle.published.value, Lifecycle.postponed.value)
 
 TRANSITIONS: dict[str, set[str]] = {
     Lifecycle.draft.value: {Lifecycle.published.value},

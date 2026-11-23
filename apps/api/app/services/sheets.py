@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -111,14 +112,29 @@ class ClassifiedSheet:
     skipped: list[SheetSkip]
 
 
+def credentials_ready(value: str) -> bool:
+    raw = value.strip()
+    if not raw:
+        return False
+    if os.path.isfile(raw):
+        return True
+    if not raw.lstrip().startswith("{"):
+        return False
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
 def sheet_status(settings: Settings) -> dict:
     sheet_id = settings.google_sheet_id.strip()
-    path = settings.google_sheets_credentials.strip()
-    if not sheet_id and not path:
+    raw = settings.google_sheets_credentials.strip()
+    if not sheet_id and not raw:
         return {"connected": False, "url": None, "message": "The Google Sheet is not connected."}
     if not _SHEET_ID.fullmatch(sheet_id):
         return {"connected": False, "url": None, "message": "The Google Sheet id is not valid."}
-    if not path or not os.path.isfile(path):
+    if not credentials_ready(raw):
         return {"connected": False, "url": None, "message": "The Google service account file was not found."}
     return {"connected": True, "url": f"https://docs.google.com/spreadsheets/d/{sheet_id}", "message": None}
 
@@ -437,10 +453,13 @@ def _token(settings: Settings) -> str:
         def data(self) -> bytes:
             return self._data
 
-    path = settings.google_sheets_credentials.strip()
+    raw = settings.google_sheets_credentials.strip()
     try:
-        credentials = service_account.Credentials.from_service_account_file(path, scopes=[SHEET_SCOPE])
-    except (ValueError, OSError) as exc:
+        if os.path.isfile(raw):
+            credentials = service_account.Credentials.from_service_account_file(raw, scopes=[SHEET_SCOPE])
+        else:
+            credentials = service_account.Credentials.from_service_account_info(json.loads(raw), scopes=[SHEET_SCOPE])
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
         raise AppError(503, "sheet_unconfigured", "The Google service account file could not be read.") from exc
 
     def request(url, method="GET", body=None, headers=None, timeout=None, **_kwargs):

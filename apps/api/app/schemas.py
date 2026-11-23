@@ -950,6 +950,14 @@ class CalendarResponse(BaseModel):
     time_label: str
 
 
+class HomeOut(BaseModel):
+    featured: list[HackathonCard]
+    recent: list[HackathonCard]
+    categories: list[CategoryOut]
+    due: list[HackathonCard]
+    deadlines: list[CalendarEvent]
+
+
 class ImportUrlIn(BaseModel):
     url: str
 

@@ -30,7 +30,7 @@ copy ..\..\.env.example .env
 .\.venv\Scripts\python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The seed script creates four hackathons whose titles start with `[Sample]`. It exits immediately when `APP_ENV` is not `development`.
+The seed script creates the development administrator and removes any hackathons whose titles start with `[Sample]`. It exits immediately when `APP_ENV` is not `development`.
 
 ## Website
 
